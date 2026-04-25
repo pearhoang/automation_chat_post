@@ -1,0 +1,745 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Demo Shop — iPhone, iPad, Mac & Phụ kiện Apple chính hãng</title>
+  <meta name="description" content="Demo Shop — Cửa hàng chuyên iPhone, iPad, Mac, Apple Watch, AirPods chính hãng & cũ đẹp. Trả góp 0%, bảo hành chính hãng." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=SF+Pro+Display:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/remixicon@4.5.0/fonts/remixicon.css" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            display: ['"SF Pro Display"', '"Inter"', 'system-ui', '-apple-system', 'sans-serif'],
+            sans: ['"Inter"', '"SF Pro Display"', 'system-ui', '-apple-system', 'sans-serif'],
+          },
+          colors: {
+            ink: '#1d1d1f',
+            sub: '#6e6e73',
+            line: '#d2d2d7',
+            mist: '#f5f5f7',
+            apple: '#0071e3',
+            sale: '#e11d48',
+          },
+          boxShadow: {
+            soft: '0 1px 2px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.06)',
+            card: '0 1px 2px rgba(0,0,0,.04), 0 4px 16px rgba(0,0,0,.05)',
+            cardHover: '0 12px 40px rgba(0,0,0,.10)',
+          },
+        },
+      },
+    };
+  </script>
+  <style>
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: 'Inter', 'SF Pro Display', system-ui, -apple-system, sans-serif;
+      color: #1d1d1f;
+      -webkit-font-smoothing: antialiased;
+      letter-spacing: -0.01em;
+    }
+    .font-display {
+      font-family: 'SF Pro Display', 'Inter', system-ui, -apple-system, sans-serif;
+      letter-spacing: -0.02em;
+    }
+    /* Smooth navbar blur */
+    .nav-blur {
+      background: rgba(255,255,255,.72);
+      backdrop-filter: saturate(180%) blur(20px);
+      -webkit-backdrop-filter: saturate(180%) blur(20px);
+    }
+    /* Hero radial */
+    .hero-bg {
+      background:
+        radial-gradient(60% 50% at 80% 20%, #e7f1ff 0%, transparent 60%),
+        radial-gradient(50% 60% at 10% 90%, #fde7ef 0%, transparent 60%),
+        linear-gradient(180deg, #fafafa 0%, #ffffff 60%);
+    }
+    .pill-bg {
+      background:
+        radial-gradient(120% 80% at 50% 0%, #1d1d1f 0%, #2a2a2e 50%, #1d1d1f 100%);
+    }
+    /* Reveal animation */
+    .reveal { opacity: 0; transform: translateY(16px); transition: opacity .8s ease, transform .8s ease; }
+    .reveal.in { opacity: 1; transform: translateY(0); }
+    /* Card hover */
+    .product-card { transition: transform .35s cubic-bezier(.2,.8,.2,1), box-shadow .35s; }
+    .product-card:hover { transform: translateY(-4px); box-shadow: 0 18px 50px rgba(0,0,0,.10); }
+    .product-card .img-wrap img { transition: transform .6s cubic-bezier(.2,.8,.2,1); }
+    .product-card:hover .img-wrap img { transform: scale(1.04); }
+    /* Sale badge sheen */
+    .sale-badge {
+      background: linear-gradient(135deg, #ff3b5c 0%, #e11d48 60%, #be123c 100%);
+      box-shadow: 0 4px 12px rgba(225,29,72,.25);
+    }
+    .install-badge {
+      background: linear-gradient(135deg, #e7f1ff, #d4e7ff);
+      color: #0049b8;
+      border: 1px solid #c4dcff;
+    }
+    /* Promo chips */
+    .promo-chip {
+      background: linear-gradient(180deg,#fff,#f7f8fa);
+      border: 1px solid #e5e7eb;
+    }
+    /* Floating buttons */
+    .fab-stack { position: fixed; right: 18px; bottom: 18px; z-index: 60; display: flex; flex-direction: column; gap: 12px; align-items: flex-end; }
+    .fab {
+      width: 52px; height: 52px; border-radius: 9999px;
+      display: inline-flex; align-items: center; justify-content: center;
+      color: #fff; font-size: 22px; box-shadow: 0 8px 24px rgba(0,0,0,.18);
+      transition: transform .2s ease, box-shadow .2s ease;
+      position: relative;
+    }
+    .fab:hover { transform: translateY(-2px) scale(1.04); box-shadow: 0 14px 30px rgba(0,0,0,.22); }
+    .fab .label {
+      position: absolute; right: 60px; top: 50%; transform: translateY(-50%);
+      background: #1d1d1f; color: #fff; font-size: 12px; font-weight: 500;
+      padding: 6px 10px; border-radius: 8px; white-space: nowrap;
+      opacity: 0; pointer-events: none; transition: opacity .2s;
+    }
+    .fab:hover .label { opacity: 1; }
+    .pulse-ring {
+      position: absolute; inset: -4px; border-radius: 9999px;
+      animation: pulse 1.8s infinite;
+      border: 2px solid currentColor; opacity: .5;
+    }
+    @keyframes pulse { 0% { transform: scale(.95); opacity: .6; } 80% { transform: scale(1.25); opacity: 0; } 100% { opacity: 0; } }
+    /* Marquee */
+    .marquee-track { display: flex; width: max-content; animation: marquee 38s linear infinite; }
+    @keyframes marquee { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+    /* Scroll-snap category strip */
+    .snap-x-x { scroll-snap-type: x mandatory; }
+    .snap-x-x > * { scroll-snap-align: start; }
+    /* Hide scrollbar */
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    /* Heart pulse */
+    .heart-btn:hover i { color: #e11d48; }
+    /* Star rating */
+    .star { color: #f5a623; }
+    /* Subtle line dividers */
+    .hr-soft { border-top: 1px solid #e5e7eb; }
+    /* Buttons */
+    .btn-primary {
+      background: #0071e3; color: white; border-radius: 9999px;
+      padding: 10px 20px; font-weight: 500; font-size: 14px;
+      transition: background .2s;
+    }
+    .btn-primary:hover { background: #0077ed; }
+    .btn-ghost {
+      color: #0071e3; font-weight: 500; font-size: 14px;
+    }
+    .btn-ghost:hover { text-decoration: underline; }
+    .btn-dark {
+      background: #1d1d1f; color: #fff; border-radius: 9999px;
+      padding: 10px 22px; font-weight: 500; font-size: 14px;
+    }
+    .btn-dark:hover { background: #000; }
+    /* Hero phone shimmer */
+    .shimmer-bg {
+      position: absolute; inset: 0;
+      background: radial-gradient(closest-side, rgba(0,113,227,.18), transparent 70%);
+      filter: blur(40px);
+      z-index: 0;
+    }
+    /* Tab active */
+    .tab-active { background: #1d1d1f; color: #fff; }
+    /* Input */
+    .search-box {
+      background: #f5f5f7; border-radius: 9999px; padding: 8px 14px;
+      display: flex; align-items: center; gap: 8px; color: #6e6e73;
+    }
+    .search-box input { background: transparent; outline: none; border: none; width: 100%; font-size: 14px; }
+
+    /* Mobile menu */
+    .mobile-drawer { transform: translateX(100%); transition: transform .3s ease; }
+    .mobile-drawer.open { transform: translateX(0); }
+  </style>
+</head>
+<body class="bg-white">
+
+<!-- Top promo strip -->
+<div class="bg-ink text-white text-[12px]">
+  <div class="overflow-hidden">
+    <div class="marquee-track py-2">
+      <div class="flex items-center gap-10 px-8 whitespace-nowrap">
+        <span><i class="ri-truck-line mr-1"></i> Miễn phí giao hàng toàn quốc cho đơn từ 500.000đ</span>
+        <span><i class="ri-shield-check-line mr-1"></i> Bảo hành chính hãng Apple Việt Nam</span>
+        <span><i class="ri-bank-card-2-line mr-1"></i> Trả góp 0% — duyệt online trong 5 phút</span>
+        <span><i class="ri-refresh-line mr-1"></i> Đổi mới trong 30 ngày</span>
+        <span><i class="ri-gift-2-line mr-1"></i> Quà tặng khi mua iPhone 16 series</span>
+      </div>
+      <div class="flex items-center gap-10 px-8 whitespace-nowrap" aria-hidden="true">
+        <span><i class="ri-truck-line mr-1"></i> Miễn phí giao hàng toàn quốc cho đơn từ 500.000đ</span>
+        <span><i class="ri-shield-check-line mr-1"></i> Bảo hành chính hãng Apple Việt Nam</span>
+        <span><i class="ri-bank-card-2-line mr-1"></i> Trả góp 0% — duyệt online trong 5 phút</span>
+        <span><i class="ri-refresh-line mr-1"></i> Đổi mới trong 30 ngày</span>
+        <span><i class="ri-gift-2-line mr-1"></i> Quà tặng khi mua iPhone 16 series</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Navbar -->
+<header class="sticky top-0 z-40 nav-blur border-b border-line/60">
+  <div class="max-w-7xl mx-auto px-5 lg:px-8">
+    <div class="h-12 flex items-center justify-between">
+      <!-- Brand -->
+      <a href="#" class="flex items-center gap-2 group">
+        <span class="w-7 h-7 rounded-full pill-bg text-white inline-flex items-center justify-center">
+          <i class="ri-apple-fill text-[15px]"></i>
+        </span>
+        <span class="font-display font-semibold tracking-tight text-[17px]">Demo<span class="text-apple"> Shop</span></span>
+      </a>
+
+      <!-- Desktop nav -->
+      <nav class="hidden lg:flex items-center gap-7 text-[13px] text-ink/80">
+        <a href="#iphone" class="hover:text-ink transition">iPhone</a>
+        <a href="#ipad" class="hover:text-ink transition">iPad</a>
+        <a href="#mac" class="hover:text-ink transition">Mac</a>
+        <a href="#watch" class="hover:text-ink transition">Watch</a>
+        <a href="#airpods" class="hover:text-ink transition">AirPods</a>
+        <a href="#phukien" class="hover:text-ink transition">Phụ kiện</a>
+        <a href="#tradein" class="hover:text-ink transition">Thu cũ đổi mới</a>
+        <a href="#support" class="hover:text-ink transition">Hỗ trợ</a>
+      </nav>
+
+      <!-- Utilities -->
+      <div class="flex items-center gap-3">
+        <button class="hidden md:inline-flex w-8 h-8 items-center justify-center text-ink/70 hover:text-ink" aria-label="Tìm kiếm">
+          <i class="ri-search-line text-[17px]"></i>
+        </button>
+        <button class="hidden md:inline-flex w-8 h-8 items-center justify-center text-ink/70 hover:text-ink" aria-label="Tài khoản">
+          <i class="ri-user-line text-[17px]"></i>
+        </button>
+        <button class="relative w-8 h-8 inline-flex items-center justify-center text-ink/70 hover:text-ink" aria-label="Giỏ hàng">
+          <i class="ri-shopping-bag-3-line text-[17px]"></i>
+          <span class="absolute -top-1 -right-1 bg-sale text-white text-[10px] leading-none rounded-full w-4 h-4 inline-flex items-center justify-center">3</span>
+        </button>
+        <button id="mobileMenuBtn" class="lg:hidden w-8 h-8 inline-flex items-center justify-center text-ink/80" aria-label="Menu">
+          <i class="ri-menu-line text-[20px]"></i>
+        </button>
+      </div>
+    </div>
+  </div>
+</header>
+
+<!-- Mobile drawer -->
+<div id="mobileDrawer" class="mobile-drawer fixed inset-y-0 right-0 w-[80%] max-w-xs bg-white shadow-2xl z-50 lg:hidden">
+  <div class="flex items-center justify-between p-5 border-b border-line">
+    <span class="font-display font-semibold">Menu</span>
+    <button id="mobileCloseBtn" class="w-8 h-8 inline-flex items-center justify-center"><i class="ri-close-line text-[22px]"></i></button>
+  </div>
+  <nav class="flex flex-col p-4 text-[15px]">
+    <a class="py-3 border-b border-line/60" href="#iphone">iPhone</a>
+    <a class="py-3 border-b border-line/60" href="#ipad">iPad</a>
+    <a class="py-3 border-b border-line/60" href="#mac">Mac</a>
+    <a class="py-3 border-b border-line/60" href="#watch">Watch</a>
+    <a class="py-3 border-b border-line/60" href="#airpods">AirPods</a>
+    <a class="py-3 border-b border-line/60" href="#phukien">Phụ kiện</a>
+    <a class="py-3 border-b border-line/60" href="#tradein">Thu cũ đổi mới</a>
+    <a class="py-3" href="#support">Hỗ trợ</a>
+  </nav>
+</div>
+
+<main>
+
+  <!-- PROMO BANNERS (mixed palette: dark gold + warm cream + cool ice) -->
+  <section class="bg-white pt-5 lg:pt-6 pb-2">
+    <div class="max-w-7xl mx-auto px-5 lg:px-8">
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <!-- Card 1: iPhone 16 Series — DARK + gold (kept) -->
+        <a href="#iphone" class="banner-card relative rounded-2xl overflow-hidden bg-[#0a0a0c] text-white p-6 flex items-center justify-between min-h-[160px] shadow-card hover:shadow-cardHover transition group">
+          <div class="relative z-10">
+            <span class="text-[11px] font-semibold tracking-[0.14em] text-amber-300 uppercase">Mới · Bán chạy</span>
+            <h3 class="font-display font-semibold text-2xl mt-1.5 leading-tight">iPhone 16<br/>Series</h3>
+            <p class="text-white/60 text-[12.5px] mt-2">Trả góp 0% · Giảm đến <b class="text-amber-300">3.000.000đ</b></p>
+            <span class="inline-flex items-center mt-3 text-[13px] text-amber-300 font-medium">Xem ngay <i class="ri-arrow-right-line ml-1 group-hover:translate-x-1 transition"></i></span>
+          </div>
+          <img class="h-28 lg:h-32 object-contain relative z-10 drop-shadow-2xl" alt="iPhone 16" src="img/p-16-promax.jpg" />
+          <span class="absolute -right-12 -bottom-12 w-48 h-48 rounded-full bg-amber-300/20 blur-3xl"></span>
+        </a>
+
+        <!-- Card 2: iPhone cũ giá sốc — WARM CREAM + burgundy red -->
+        <a href="#iphone" class="banner-card relative rounded-2xl overflow-hidden p-6 flex items-center justify-between min-h-[160px] shadow-card hover:shadow-cardHover transition group border border-rose-200/60"
+           style="background:linear-gradient(135deg,#fff5ec 0%,#ffe7dc 55%,#ffd6c5 100%);">
+          <div class="relative z-10">
+            <span class="text-[11px] font-semibold tracking-[0.14em] uppercase" style="color:#9b1c2b;">Hot · Máy cũ</span>
+            <h3 class="font-display font-semibold text-2xl mt-1.5 leading-tight" style="color:#3a0a10;">iPhone cũ<br/>giá sốc</h3>
+            <p class="text-[12.5px] mt-2" style="color:#6b2832;">Cũ Đẹp 99% · Giảm đến <b style="color:#c1192c;">8.000.000đ</b></p>
+            <span class="inline-flex items-center mt-3 text-[13px] font-semibold" style="color:#c1192c;">Săn deal <i class="ri-fire-fill ml-1"></i></span>
+          </div>
+          <img class="h-28 lg:h-32 object-contain relative z-10 drop-shadow-xl" alt="iPhone 15 Pro" src="img/p-15-pro.jpg" />
+          <span class="absolute -right-14 -bottom-14 w-52 h-52 rounded-full bg-rose-300/40 blur-3xl"></span>
+          <span class="absolute -left-10 -top-10 w-32 h-32 rounded-full bg-amber-200/40 blur-2xl"></span>
+        </a>
+
+        <!-- Card 3: Thu cũ đổi mới — COOL ICE + apple blue -->
+        <a href="#tradein" class="banner-card relative rounded-2xl overflow-hidden p-6 flex items-center justify-between min-h-[160px] shadow-card hover:shadow-cardHover transition group border border-sky-200/60"
+           style="background:linear-gradient(135deg,#f1f7ff 0%,#e0effe 55%,#cfe5fc 100%);">
+          <div class="relative z-10">
+            <span class="text-[11px] font-semibold tracking-[0.14em] uppercase" style="color:#0050a0;">Trade in</span>
+            <h3 class="font-display font-semibold text-2xl mt-1.5 leading-tight" style="color:#0a1f3d;">Thu cũ<br/>đổi mới</h3>
+            <p class="text-[12.5px] mt-2" style="color:#234670;">Tặng thêm <b style="color:#0071e3;">1.000.000đ</b> khi lên đời iPhone 16</p>
+            <span class="inline-flex items-center mt-3 text-[13px] font-semibold" style="color:#0071e3;">Định giá ngay <i class="ri-arrow-right-line ml-1 group-hover:translate-x-1 transition"></i></span>
+          </div>
+          <div class="relative z-10 flex items-center justify-center w-28 h-28 lg:w-32 lg:h-32">
+            <i class="ri-refresh-line text-[88px]" style="color:#0071e3;opacity:.85;"></i>
+          </div>
+          <span class="absolute -right-14 -bottom-14 w-52 h-52 rounded-full bg-sky-300/40 blur-3xl"></span>
+          <span class="absolute -left-10 -top-10 w-32 h-32 rounded-full bg-cyan-200/40 blur-2xl"></span>
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- CATEGORY QUICK NAV (product mockup style — uniform fill) -->
+  <section class="bg-white border-b border-line/60">
+    <div class="max-w-7xl mx-auto px-5 lg:px-8 py-4">
+      <div class="flex items-center gap-3 lg:gap-5 overflow-x-auto no-scrollbar">
+        <a href="#iphone" class="quicknav flex flex-col items-center min-w-[88px] py-2 px-2 rounded-xl hover:bg-mist transition">
+          <span class="h-16 w-16 flex items-center justify-center overflow-hidden">
+            <img class="h-full w-full object-contain scale-[1.7]" src="img/p-16-promax.jpg" alt="iPhone" />
+          </span>
+          <span class="text-[12px] font-medium mt-1.5">iPhone</span>
+        </a>
+        <a href="#ipad" class="quicknav flex flex-col items-center min-w-[88px] py-2 px-2 rounded-xl hover:bg-mist transition">
+          <span class="h-16 w-16 flex items-center justify-center overflow-hidden">
+            <img class="h-full w-full object-contain scale-[1.45]" src="img/p-ipad-pro.jpg" alt="iPad" />
+          </span>
+          <span class="text-[12px] font-medium mt-1.5">iPad</span>
+        </a>
+        <a href="#mac" class="quicknav flex flex-col items-center min-w-[88px] py-2 px-2 rounded-xl hover:bg-mist transition">
+          <span class="h-16 w-16 flex items-center justify-center overflow-hidden">
+            <img class="h-full w-full object-contain scale-[1.5]" src="img/p-mbp-14.jpg" alt="Mac" />
+          </span>
+          <span class="text-[12px] font-medium mt-1.5">Mac</span>
+        </a>
+        <a href="#watch" class="quicknav flex flex-col items-center min-w-[88px] py-2 px-2 rounded-xl hover:bg-mist transition">
+          <span class="h-16 w-16 flex items-center justify-center overflow-hidden">
+            <img class="h-full w-full object-contain scale-[1.25]" src="img/watch-s11.jpg" alt="Watch" />
+          </span>
+          <span class="text-[12px] font-medium mt-1.5">Watch</span>
+        </a>
+        <a href="#airpods" class="quicknav flex flex-col items-center min-w-[88px] py-2 px-2 rounded-xl hover:bg-mist transition">
+          <span class="h-16 w-16 flex items-center justify-center overflow-hidden">
+            <img class="h-full w-full object-contain" src="img/cat-airpods.jpg" alt="AirPods" />
+          </span>
+          <span class="text-[12px] font-medium mt-1.5">AirPods</span>
+        </a>
+        <a href="#phukien" class="quicknav flex flex-col items-center min-w-[88px] py-2 px-2 rounded-xl hover:bg-mist transition">
+          <span class="h-16 w-16 flex items-center justify-center overflow-hidden">
+            <img class="h-full w-full object-contain" src="img/cat-acc.jpg" alt="Phụ kiện" />
+          </span>
+          <span class="text-[12px] font-medium mt-1.5">Phụ kiện</span>
+        </a>
+        <span class="hidden md:block w-px h-14 bg-line mx-1"></span>
+        <a href="#tradein" class="quicknav hidden md:flex flex-col items-center min-w-[88px] py-2 px-2 rounded-xl hover:bg-mist transition">
+          <span class="h-16 w-16 flex items-center justify-center"><i class="ri-refresh-line text-[34px] text-apple"></i></span>
+          <span class="text-[12px] font-medium mt-1.5">Thu cũ</span>
+        </a>
+        <a href="#iphone" class="quicknav hidden md:flex flex-col items-center min-w-[88px] py-2 px-2 rounded-xl hover:bg-mist transition">
+          <span class="h-16 w-16 flex items-center justify-center"><i class="ri-fire-fill text-[34px] text-sale"></i></span>
+          <span class="text-[12px] font-medium mt-1.5">Khuyến mãi</span>
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- iPHONE GRID -->
+  <section id="iphone" class="py-8 lg:py-12">
+    <div class="max-w-7xl mx-auto px-5 lg:px-8">
+      <div class="flex flex-col md:flex-row md:items-end md:justify-between gap-3 mb-5">
+        <div class="flex items-center gap-3">
+          <span class="w-1.5 h-7 bg-sale rounded-full"></span>
+          <h2 class="font-display text-2xl lg:text-3xl font-semibold">iPhone — Bán chạy</h2>
+          <span class="text-[12px] text-sub hidden md:inline">Trả góp 0% · Bảo hành chính hãng · Đổi trả 30 ngày</span>
+        </div>
+        <div class="overflow-x-auto no-scrollbar -mx-1">
+          <div class="flex items-center gap-2 px-1">
+            <button class="filter-chip iphone-chip tab-active px-3.5 py-1.5 rounded-full text-[12.5px] border border-ink">Tất cả</button>
+            <button class="filter-chip iphone-chip bg-white border border-line text-ink/80 px-3.5 py-1.5 rounded-full text-[12.5px] hover:bg-mist">iPhone 16 Pro</button>
+            <button class="filter-chip iphone-chip bg-white border border-line text-ink/80 px-3.5 py-1.5 rounded-full text-[12.5px] hover:bg-mist">iPhone 16</button>
+            <button class="filter-chip iphone-chip bg-white border border-line text-ink/80 px-3.5 py-1.5 rounded-full text-[12.5px] hover:bg-mist">iPhone 15</button>
+            <button class="filter-chip iphone-chip bg-white border border-line text-ink/80 px-3.5 py-1.5 rounded-full text-[12.5px] hover:bg-mist">iPhone 14</button>
+            <button class="filter-chip iphone-chip bg-white border border-line text-ink/80 px-3.5 py-1.5 rounded-full text-[12.5px] hover:bg-mist">Máy cũ</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="productGrid" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 lg:gap-4"></div>
+
+      <div class="mt-7 text-center">
+        <button class="inline-flex items-center gap-2 border border-line bg-white hover:bg-mist text-ink rounded-full px-5 py-2.5 text-[13.5px] font-medium">
+          Xem thêm iPhone <i class="ri-arrow-down-s-line"></i>
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <!-- iPAD GRID -->
+  <section id="ipad" class="py-8 lg:py-12 bg-mist/60">
+    <div class="max-w-7xl mx-auto px-5 lg:px-8">
+      <div class="flex items-center gap-3 mb-5">
+        <span class="w-1.5 h-7 bg-apple rounded-full"></span>
+        <h2 class="font-display text-2xl lg:text-3xl font-semibold">iPad — Học tập, sáng tạo</h2>
+        <span class="text-[12px] text-sub hidden md:inline">Mới 100% nguyên seal · Hỗ trợ trả góp 0%</span>
+      </div>
+      <div id="ipadGrid" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 lg:gap-4"></div>
+    </div>
+  </section>
+
+  <!-- MAC GRID -->
+  <section id="mac" class="py-8 lg:py-12">
+    <div class="max-w-7xl mx-auto px-5 lg:px-8">
+      <div class="flex items-center gap-3 mb-5">
+        <span class="w-1.5 h-7 bg-ink rounded-full"></span>
+        <h2 class="font-display text-2xl lg:text-3xl font-semibold">Mac — Hiệu năng đỉnh cao</h2>
+        <span class="text-[12px] text-sub hidden md:inline">M4 · M5 · Bảo hành 12 tháng</span>
+      </div>
+      <div id="macGrid" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 lg:gap-4"></div>
+    </div>
+  </section>
+
+  <!-- WATCH GRID -->
+  <section id="watch" class="py-8 lg:py-12 bg-mist/60">
+    <div class="max-w-7xl mx-auto px-5 lg:px-8">
+      <div class="flex items-center gap-3 mb-5">
+        <span class="w-1.5 h-7 bg-rose-500 rounded-full"></span>
+        <h2 class="font-display text-2xl lg:text-3xl font-semibold">Apple Watch — Đồng hành cùng bạn</h2>
+        <span class="text-[12px] text-sub hidden md:inline">Series 10 · Ultra 2 · SE</span>
+      </div>
+      <div id="watchGrid" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 lg:gap-4"></div>
+    </div>
+  </section>
+
+  <!-- AIRPODS GRID -->
+  <section id="airpods" class="py-8 lg:py-12">
+    <div class="max-w-7xl mx-auto px-5 lg:px-8">
+      <div class="flex items-center gap-3 mb-5">
+        <span class="w-1.5 h-7 bg-violet-500 rounded-full"></span>
+        <h2 class="font-display text-2xl lg:text-3xl font-semibold">AirPods — Âm thanh sống động</h2>
+        <span class="text-[12px] text-sub hidden md:inline">Pro 2 · AirPods 4 · Max</span>
+      </div>
+      <div id="airpodsGrid" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 lg:gap-4"></div>
+    </div>
+  </section>
+
+</main>
+
+
+<!-- FOOTER -->
+<footer id="support" class="bg-mist border-t border-line">
+  <div class="max-w-7xl mx-auto px-5 lg:px-8 py-12 grid grid-cols-2 md:grid-cols-4 gap-8 text-[13px] text-ink/80">
+    <div class="col-span-2 md:col-span-1">
+      <a href="#" class="flex items-center gap-2">
+        <span class="w-7 h-7 rounded-full pill-bg text-white inline-flex items-center justify-center"><i class="ri-apple-fill text-[15px]"></i></span>
+        <span class="font-display font-semibold tracking-tight text-[16px]">Demo<span class="text-apple"> Shop</span></span>
+      </a>
+      <p class="text-sub mt-3 leading-relaxed">Đại lý uỷ quyền Apple — chuyên iPhone, iPad, Mac, Watch, AirPods chính hãng & cũ đẹp.</p>
+      <div class="flex items-center gap-3 mt-4">
+        <a class="w-9 h-9 rounded-full bg-white border border-line inline-flex items-center justify-center hover:text-apple" href="#"><i class="ri-facebook-fill"></i></a>
+        <a class="w-9 h-9 rounded-full bg-white border border-line inline-flex items-center justify-center hover:text-apple" href="#"><i class="ri-instagram-line"></i></a>
+        <a class="w-9 h-9 rounded-full bg-white border border-line inline-flex items-center justify-center hover:text-apple" href="#"><i class="ri-youtube-fill"></i></a>
+        <a class="w-9 h-9 rounded-full bg-white border border-line inline-flex items-center justify-center hover:text-apple" href="#"><i class="ri-tiktok-fill"></i></a>
+      </div>
+    </div>
+    <div>
+      <h5 class="font-display font-semibold text-ink mb-3">Sản phẩm</h5>
+      <ul class="space-y-2">
+        <li><a href="#iphone" class="hover:text-ink">iPhone</a></li>
+        <li><a href="#ipad" class="hover:text-ink">iPad</a></li>
+        <li><a href="#mac" class="hover:text-ink">Mac</a></li>
+        <li><a href="#watch" class="hover:text-ink">Apple Watch</a></li>
+        <li><a href="#airpods" class="hover:text-ink">AirPods</a></li>
+      </ul>
+    </div>
+    <div>
+      <h5 class="font-display font-semibold text-ink mb-3">Hỗ trợ</h5>
+      <ul class="space-y-2">
+        <li><a href="#" class="hover:text-ink">Chính sách bảo hành</a></li>
+        <li><a href="#" class="hover:text-ink">Chính sách đổi trả</a></li>
+        <li><a href="#" class="hover:text-ink">Hướng dẫn trả góp</a></li>
+        <li><a href="#" class="hover:text-ink">Tra cứu đơn hàng</a></li>
+        <li><a href="#" class="hover:text-ink">Câu hỏi thường gặp</a></li>
+      </ul>
+    </div>
+    <div>
+      <h5 class="font-display font-semibold text-ink mb-3">Liên hệ</h5>
+      <ul class="space-y-2">
+        <li class="flex items-center gap-2"><i class="ri-phone-line"></i> 1800 1234 (miễn phí)</li>
+        <li class="flex items-center gap-2"><i class="ri-mail-line"></i> hello@demoshop.vn</li>
+        <li class="flex items-start gap-2"><i class="ri-map-pin-line mt-1"></i> 12 Nguyễn Huệ, Q.1, TP.HCM</li>
+        <li class="flex items-start gap-2"><i class="ri-time-line mt-1"></i> 8:00 — 22:00 hàng ngày</li>
+      </ul>
+    </div>
+  </div>
+  <div class="border-t border-line">
+    <div class="max-w-7xl mx-auto px-5 lg:px-8 py-5 flex flex-col md:flex-row items-center justify-between gap-3 text-[12px] text-sub">
+      <p>© 2025 Demo Shop. Apple, logo Apple, iPhone, iPad, Mac… là thương hiệu của Apple Inc.</p>
+      <div class="flex items-center gap-4">
+        <a href="#" class="hover:text-ink">Chính sách bảo mật</a>
+        <a href="#" class="hover:text-ink">Điều khoản sử dụng</a>
+        <a href="#" class="hover:text-ink">Sitemap</a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<!-- Floating Buttons -->
+<div class="fab-stack">
+  <a href="#" id="backToTop" class="fab bg-ink hidden" aria-label="Lên đầu trang">
+    <span class="label">Lên đầu trang</span>
+    <i class="ri-arrow-up-line"></i>
+  </a>
+  <a href="https://m.me/demoshop" class="fab" style="background:#0084ff;" aria-label="Messenger">
+    <span class="label">Chat Messenger</span>
+    <i class="ri-messenger-fill"></i>
+  </a>
+  <a href="https://zalo.me/0900000000" class="fab" style="background:#0068ff;" aria-label="Zalo">
+    <span class="label">Chat Zalo</span>
+    <span class="font-bold text-[14px]">Zalo</span>
+  </a>
+  <a href="tel:18001234" class="fab" style="background:#16a34a;" aria-label="Gọi điện">
+    <span class="pulse-ring" style="color:#16a34a"></span>
+    <span class="label">Gọi 1800 1234</span>
+    <i class="ri-phone-fill"></i>
+  </a>
+</div>
+
+<script>
+  // ---- Product data ----
+  const products = [
+    {
+      name: 'iPhone 16 Pro Max 256GB',
+      condition: 'Chính hãng VN/A',
+      price: 34_990_000, original: 37_990_000,
+      smember: 349_000, student: 1_000_000,
+      img: 'img/p-16-promax.jpg',
+      rating: 4.9, reviews: 18, hot: true,
+    },
+    {
+      name: 'iPhone 16 Pro 128GB',
+      condition: 'Chính hãng VN/A',
+      price: 28_990_000, original: 30_990_000,
+      smember: 289_000, student: 700_000,
+      img: 'img/p-16-pro.jpg',
+      rating: 4.9, reviews: 12,
+    },
+    {
+      name: 'iPhone 16 Plus 256GB',
+      condition: 'Chính hãng VN/A',
+      price: 25_490_000, original: 27_990_000,
+      smember: 254_000, student: 700_000,
+      img: 'img/p-16-plus.jpg',
+      rating: 4.8, reviews: 8,
+    },
+    {
+      name: 'iPhone 16 128GB',
+      condition: 'Chính hãng VN/A',
+      price: 21_990_000, original: 24_990_000,
+      smember: 219_000, student: 700_000,
+      img: 'img/p-16.jpg',
+      rating: 4.8, reviews: 21,
+    },
+    {
+      name: 'iPhone 15 Pro Max 256GB',
+      condition: 'Cũ Đẹp 99%',
+      price: 24_590_000, original: 32_990_000,
+      smember: 246_000, student: 700_000,
+      img: 'img/p-15-promax.jpg',
+      rating: 4.9, reviews: 32,
+    },
+    {
+      name: 'iPhone 15 Pro 128GB',
+      condition: 'Cũ Đẹp 99%',
+      price: 19_990_000, original: 27_990_000,
+      smember: 199_000, student: 700_000,
+      img: 'img/p-15-pro.jpg',
+      rating: 4.8, reviews: 28,
+    },
+    {
+      name: 'iPhone 15 128GB',
+      condition: 'Chính hãng VN/A',
+      price: 17_990_000, original: 22_990_000,
+      smember: 179_000, student: 700_000,
+      img: 'img/p-15.jpg',
+      rating: 4.7, reviews: 14,
+    },
+    {
+      name: 'iPhone 14 Pro Max 256GB',
+      condition: 'Cũ Đẹp',
+      price: 18_990_000, original: 28_990_000,
+      smember: 189_000, student: 700_000,
+      img: 'img/p-14-promax.jpg',
+      rating: 4.7, reviews: 9,
+    },
+    {
+      name: 'iPhone 14 128GB',
+      condition: 'Chính hãng Đã kích hoạt',
+      price: 14_990_000, original: 19_990_000,
+      smember: 149_000, student: 700_000,
+      img: 'img/p-14.jpg',
+      rating: 4.7, reviews: 17,
+    },
+    {
+      name: 'iPhone 13 128GB',
+      condition: 'Chính hãng VN/A',
+      price: 11_990_000, original: 16_990_000,
+      smember: 119_000, student: 700_000,
+      img: 'img/p-13.jpg',
+      rating: 4.6, reviews: 23,
+    },
+  ];
+
+  const fmt = n => n.toLocaleString('vi-VN') + 'đ';
+  const pct = (price, original) => Math.round((1 - price / original) * 100);
+
+  const productCard = (p) => {
+    const discount = pct(p.price, p.original);
+    const stars = Math.floor(p.rating);
+    return `
+      <article class="product-card group bg-white rounded-2xl border border-line/70 shadow-card overflow-hidden flex flex-col">
+        <!-- top badges -->
+        <div class="relative">
+          <div class="absolute top-2 left-2 z-10">
+            <span class="sale-badge text-white text-[11px] font-semibold px-2.5 py-1 rounded-md inline-flex items-center gap-1">
+              <i class="ri-fire-fill text-[12px]"></i> Giảm ${discount}%
+            </span>
+          </div>
+          <div class="absolute top-2 right-2 z-10">
+            <span class="install-badge text-[11px] font-semibold px-2.5 py-1 rounded-md inline-block">Trả góp 0%</span>
+          </div>
+          ${p.hot ? `<div class="absolute bottom-2 left-2 z-10">
+            <span class="bg-ink/85 text-white text-[10px] font-medium px-2 py-1 rounded-md inline-flex items-center gap-1">
+              <i class="ri-flashlight-fill text-amber-300"></i> Bán chạy
+            </span>
+          </div>` : ''}
+          <div class="img-wrap aspect-square bg-mist flex items-center justify-center overflow-hidden ${p.compact ? 'p-5' : ''}">
+            <img class="${p.compact ? 'max-w-[80%] max-h-[80%] object-contain' : 'w-full h-full object-cover scale-110'} mix-blend-multiply group-hover:scale-[1.06] transition-transform duration-500" alt="${p.name}" loading="lazy" src="${p.img}" />
+          </div>
+        </div>
+        <!-- body -->
+        <div class="p-4 flex flex-col flex-1">
+          <h3 class="font-display font-semibold text-[15px] leading-snug line-clamp-2 min-h-[42px]">${p.name} — ${p.condition}</h3>
+
+          <div class="flex items-baseline gap-2 mt-2">
+            <span class="text-sale font-display font-semibold text-[20px]">${fmt(p.price)}</span>
+            <span class="text-sub text-[13px] line-through">${fmt(p.original)}</span>
+          </div>
+
+          <ul class="mt-3 space-y-1.5">
+            <li class="promo-chip text-[11.5px] text-ink/80 px-2.5 py-1.5 rounded-md flex items-center gap-1.5">
+              <i class="ri-medal-2-line text-apple"></i> Member giảm đến ${fmt(p.smember)}
+            </li>
+            <li class="promo-chip text-[11.5px] text-ink/80 px-2.5 py-1.5 rounded-md flex items-center gap-1.5">
+              <i class="ri-graduation-cap-line text-apple"></i> HSSV giảm thêm ${fmt(p.student)}
+            </li>
+            <li class="promo-chip text-[11.5px] text-ink/80 px-2.5 py-1.5 rounded-md flex items-start gap-1.5">
+              <i class="ri-bank-card-2-line text-apple mt-0.5"></i>
+              <span>Trả góp 0% — 0đ phụ phí — 0đ trả trước — kỳ hạn đến 9 tháng</span>
+            </li>
+          </ul>
+
+          <div class="mt-auto pt-3 hr-soft flex items-center justify-between text-[12px] text-sub">
+            <span class="inline-flex items-center gap-1">
+              ${'<i class="ri-star-fill star"></i>'.repeat(stars)} <span class="ml-0.5">${p.rating}</span>
+              <span class="text-line">·</span> <span>${p.reviews}</span>
+            </span>
+            <button class="heart-btn inline-flex items-center gap-1 text-apple hover:text-sale transition" aria-label="Yêu thích">
+              <i class="ri-heart-line"></i> Yêu thích
+            </button>
+          </div>
+        </div>
+      </article>
+    `;
+  };
+
+  document.getElementById('productGrid').innerHTML = products.map(productCard).join('');
+
+  // ---- Other category products ----
+  const ipadProducts = [
+    { name:'iPad Pro M4 11" 256GB', condition:'Wi‑Fi · Chính hãng VN/A', price:27_990_000, original:31_990_000, smember:279_000, student:700_000, img:'img/p-ipad-pro.jpg', rating:4.9, reviews:14, hot:true, compact:true },
+    { name:'iPad Pro M4 13" 512GB', condition:'Wi‑Fi · Chính hãng VN/A', price:38_990_000, original:43_990_000, smember:389_000, student:1_000_000, img:'img/p-ipad-pro.jpg', rating:4.9, reviews:9, compact:true },
+    { name:'iPad Air M2 11" 128GB', condition:'Wi‑Fi · Chính hãng VN/A', price:16_490_000, original:18_990_000, smember:164_000, student:700_000, img:'img/p-ipad-air.jpg', rating:4.8, reviews:22, compact:true },
+    { name:'iPad Air M2 13" 256GB', condition:'Wi‑Fi · Chính hãng VN/A', price:22_990_000, original:25_990_000, smember:229_000, student:700_000, img:'img/p-ipad-air.jpg', rating:4.8, reviews:16, compact:true },
+    { name:'iPad Gen 10 64GB', condition:'Wi‑Fi · Chính hãng VN/A', price:8_990_000, original:11_990_000, smember:89_000, student:500_000, img:'img/p-ipad-air.jpg', rating:4.7, reviews:41, compact:true },
+  ];
+  const macProducts = [
+    { name:'MacBook Air M3 13" 256GB', condition:'Chính hãng VN/A', price:25_990_000, original:28_990_000, smember:259_000, student:1_000_000, img:'img/p-mba-13.jpg', rating:4.9, reviews:38, hot:true },
+    { name:'MacBook Air M3 13" 512GB', condition:'Chính hãng VN/A', price:30_990_000, original:34_990_000, smember:309_000, student:1_000_000, img:'img/p-mba-13.jpg', rating:4.9, reviews:21 },
+    { name:'MacBook Pro M4 14" 512GB', condition:'Chính hãng VN/A', price:39_990_000, original:43_990_000, smember:399_000, student:1_000_000, img:'img/p-mbp-14.jpg', rating:4.9, reviews:17 },
+    { name:'MacBook Pro M4 Pro 14" 1TB', condition:'Chính hãng VN/A', price:54_990_000, original:59_990_000, smember:549_000, student:1_500_000, img:'img/p-mbp-14.jpg', rating:5.0, reviews:7 },
+    { name:'MacBook Air M2 13" 256GB', condition:'Cũ Đẹp 99%', price:18_990_000, original:24_990_000, smember:189_000, student:700_000, img:'img/p-mba-13.jpg', rating:4.8, reviews:46 },
+  ];
+  const watchProducts = [
+    { name:'Apple Watch Series 11 42mm', condition:'GPS · Rose Gold · Chính hãng', price:10_990_000, original:11_990_000, smember:109_000, student:500_000, img:'img/watch-s11.jpg', rating:4.9, reviews:28, hot:true, compact:true },
+    { name:'Apple Watch Series 10 46mm Titanium', condition:'GPS+LTE · Chính hãng VN/A', price:14_990_000, original:16_990_000, smember:149_000, student:500_000, img:'img/watch-s10-46-natural.jpg', rating:4.9, reviews:15, compact:true },
+    { name:'Apple Watch Ultra 2 49mm', condition:'GPS+LTE · Ocean Navy · VN/A', price:21_990_000, original:23_990_000, smember:219_000, student:500_000, img:'img/watch-ultra2.jpg', rating:5.0, reviews:11, compact:true },
+    { name:'Apple Watch SE 2 44mm', condition:'GPS · Starlight · Chính hãng', price:6_490_000, original:7_490_000, smember:64_000, student:500_000, img:'img/watch-se-starlight.jpg', rating:4.7, reviews:33, compact:true },
+    { name:'Apple Watch Series 10 42mm Slate', condition:'GPS · Đã kích hoạt', price:8_990_000, original:11_990_000, smember:89_000, student:500_000, img:'img/watch-s10-42-slate.jpg', rating:4.7, reviews:24, compact:true },
+  ];
+  const airpodsProducts = [
+    { name:'AirPods Pro 2 (USB‑C)', condition:'Mới · Chính hãng VN/A', price:5_490_000, original:6_490_000, smember:54_000, student:500_000, img:'img/p-airpods-pro.jpg', rating:4.9, reviews:62, hot:true, compact:true },
+    { name:'AirPods 4 (ANC)', condition:'Mới · Chính hãng VN/A', price:4_290_000, original:4_990_000, smember:42_000, student:500_000, img:'img/p-airpods-4.jpg', rating:4.8, reviews:19, compact:true },
+    { name:'AirPods 4', condition:'Mới · Chính hãng VN/A', price:2_990_000, original:3_490_000, smember:29_000, student:500_000, img:'img/p-airpods-4.jpg', rating:4.7, reviews:27, compact:true },
+    { name:'AirPods Max (USB‑C)', condition:'Mới · Chính hãng VN/A', price:13_990_000, original:14_990_000, smember:139_000, student:700_000, img:'img/p-airpods-max.jpg', rating:4.8, reviews:8, compact:true },
+    { name:'AirPods Pro 2', condition:'Cũ Đẹp 99%', price:3_990_000, original:5_490_000, smember:39_000, student:500_000, img:'img/p-airpods-pro.jpg', rating:4.7, reviews:34, compact:true },
+  ];
+  document.getElementById('ipadGrid').innerHTML = ipadProducts.map(productCard).join('');
+  document.getElementById('macGrid').innerHTML = macProducts.map(productCard).join('');
+  document.getElementById('watchGrid').innerHTML = watchProducts.map(productCard).join('');
+  document.getElementById('airpodsGrid').innerHTML = airpodsProducts.map(productCard).join('');
+
+  // ---- Heart toggle ----
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.heart-btn');
+    if (!btn) return;
+    const icon = btn.querySelector('i');
+    const filled = icon.classList.toggle('ri-heart-fill');
+    icon.classList.toggle('ri-heart-line', !filled);
+    btn.style.color = filled ? '#e11d48' : '';
+  });
+
+  // ---- Filter chips (visual toggle only) ----
+  document.querySelectorAll('.filter-chip').forEach(c => {
+    c.addEventListener('click', () => {
+      document.querySelectorAll('.filter-chip').forEach(x => {
+        x.classList.remove('tab-active','border-ink');
+        x.classList.add('bg-white','border','border-line','text-ink/80');
+      });
+      c.classList.add('tab-active','border-ink');
+      c.classList.remove('bg-white','border-line','text-ink/80');
+    });
+  });
+
+  // ---- Back-to-top ----
+  const back = document.getElementById('backToTop');
+  back.addEventListener('click', (e) => { e.preventDefault(); window.scrollTo({ top: 0, behavior: 'smooth' }); });
+  window.addEventListener('scroll', () => {
+    back.classList.toggle('hidden', window.scrollY < 400);
+  });
+
+  // ---- Reveal animation ----
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach(en => {
+      if (en.isIntersecting) { en.target.classList.add('in'); io.unobserve(en.target); }
+    });
+  }, { threshold: 0.1 });
+  document.querySelectorAll('.reveal').forEach(el => io.observe(el));
+
+  // ---- Mobile drawer ----
+  const drawer = document.getElementById('mobileDrawer');
+  document.getElementById('mobileMenuBtn').addEventListener('click', () => drawer.classList.add('open'));
+  document.getElementById('mobileCloseBtn').addEventListener('click', () => drawer.classList.remove('open'));
+  drawer.querySelectorAll('a').forEach(a => a.addEventListener('click', () => drawer.classList.remove('open')));
+</script>
+
+</body>
+</html>
