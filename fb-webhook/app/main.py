@@ -14,6 +14,7 @@ import hmac
 import json
 import logging
 
+import httpx
 from fastapi import FastAPI, HTTPException, Request, Response
 
 from .config import settings
@@ -182,6 +183,101 @@ async def telegram_webhook(request: Request):
         log.exception("tg_handle_update crashed")
     # Always 200 OK so Telegram doesn't keep retrying a poisoned update.
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# LLM pass-through proxy
+#
+# OpenClaw normalizes model ids to `<provider>/<id-after-first-slash>` and
+# sends only the trailing `<id>` in the request body. 9Router however
+# requires the *full* `cx/gpt-5.5` (provider prefix included) — sending
+# bare `gpt-5.5` returns 403 "model_not_found".
+#
+# This proxy sits in front of 9Router (or any OpenAI-compatible gateway)
+# and re-prefixes the model name on the way out so OpenClaw's catalog can
+# stay registered with `id: gpt-5.5` (no slash → no surprise normalization).
+#
+# Point OpenClaw's models.providers.<x>.baseUrl at
+# `https://api.jazzrelaxation.com/llm-proxy/v1` instead of the upstream URL.
+# ---------------------------------------------------------------------------
+_LLM_FORWARD_HEADERS = {
+    "authorization",
+    "content-type",
+    "accept",
+    # Deliberately NOT forwarding accept-encoding — we want upstream to
+    # send plain text so we can re-emit it without re-encoding.
+    # Deliberately NOT forwarding user-agent — 9Router blocks the
+    # `OpenAI/JS` user-agent that OpenClaw's embedded client sends.
+    "x-stainless-os",
+    "x-stainless-arch",
+    "x-stainless-runtime",
+    "x-stainless-runtime-version",
+    "x-stainless-package-version",
+    "x-stainless-lang",
+}
+
+
+@app.api_route(
+    "/llm-proxy/v1/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"]
+)
+async def llm_proxy(path: str, request: Request):
+    """Forward to settings.openai_base_url, prepending `cx/` to model names."""
+
+    upstream = f"{settings.openai_base_url.rstrip('/')}/{path}"
+    body = await request.body()
+
+    # Try to rewrite the model field for chat/completions and similar.
+    # (No-op if body isn't JSON or has no model.)
+    original_model: str | None = None
+    if body and request.headers.get("content-type", "").startswith("application/json"):
+        try:
+            payload = json.loads(body)
+        except Exception:
+            payload = None
+        if isinstance(payload, dict):
+            model = payload.get("model")
+            if isinstance(model, str) and model:
+                original_model = model
+                # Normalize OpenClaw style "openai/gpt-5.5" or bare "gpt-5.5"
+                # into the 9Router-required "cx/<id>" form.
+                bare = model.split("/", 1)[1] if "/" in model else model
+                payload["model"] = f"cx/{bare}"
+                body = json.dumps(payload).encode()
+
+    headers = {
+        k: v for k, v in request.headers.items() if k.lower() in _LLM_FORWARD_HEADERS
+    }
+    # Override user-agent: 9Router rejects the upstream OpenAI/JS SDK UA with
+    # 403 "Your request was blocked." Use a neutral curl-ish UA.
+    headers["user-agent"] = "fb-webhook-llm-proxy/1.0"
+
+    async with httpx.AsyncClient(timeout=120.0) as http:
+        try:
+            r = await http.request(
+                request.method,
+                upstream,
+                content=body,
+                headers=headers,
+                params=dict(request.query_params),
+            )
+        except httpx.HTTPError as exc:
+            log.error("llm-proxy upstream error: %s", exc)
+            raise HTTPException(status_code=502, detail="upstream_error") from exc
+
+    if r.status_code >= 400:
+        log.warning(
+            "llm-proxy upstream %s for model=%s -> %s body=%s",
+            r.status_code,
+            original_model,
+            upstream,
+            r.text[:300],
+        )
+
+    return Response(
+        content=r.content,
+        status_code=r.status_code,
+        media_type=r.headers.get("content-type"),
+    )
 
 
 @app.on_event("shutdown")
