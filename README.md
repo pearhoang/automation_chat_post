@@ -244,18 +244,281 @@ systemctl --user --machine=root@.host restart openclaw-gateway
 
 ---
 
-## 6. Troubleshooting
+## 6. Common pitfalls (real issues we hit during the first install)
 
-| Symptom | Likely cause / fix |
-|---|---|
-| `curl https://live....` → connection refused | DNS A record not yet pointing at VPS IP. Wait for propagation; verify with `dig +short live.jazzrelaxation.com`. |
-| Caddy log shows ACME `unauthorized` | DNS resolves to a *different* IP (CDN / old record). Caddy uses HTTP-01 by default; the IP must be this VPS. |
-| `fb-webhook` keeps restarting | Inspect `/var/log/fb-webhook.log`. Most common: `.env` has invalid value or missing token. Booleans must be plain `true` / `false`, no inline comments. |
-| Webhook verification fails in FB UI | `FB_VERIFY_TOKEN` differs between `.env` and the Meta UI. They must match exactly. |
-| Send API returns `(#10) Application does not have permission` | Page Token is short-lived or missing `pages_messaging` permission. Re-issue via Graph API Explorer. |
-| Comments not arriving | Webhook is subscribed to **Page** object but not to the **feed** field. Re-check subscriptions. |
-| OpenClaw rate-limited installing skills | ClawHub free tier = a few requests / minute. Either wait a minute or, as we did here, `git clone` the skill repo straight into `~/.openclaw/workspace/skills/`. |
-| `openclaw skills list` shows the skill but `gog` says `needs setup` | That's the unrelated `gog` (Google Workspace) skill, harmless. |
+> Read this before you re-run the installer on a new machine. Every entry here
+> is something we had to debug or work around live during the first
+> provisioning of `109.123.233.131`.
+
+### 6.1 Cloudflare proxy will break Caddy ACME
+
+If your DNS is on Cloudflare (or any CDN), set the records to **DNS only**
+(grey cloud), **not** "Proxied" (orange cloud).
+
+- HTTP-01 ACME challenge requires Let's Encrypt to reach **your** VPS IP on
+  port 80. With Cloudflare proxying, it reaches Cloudflare instead and gets
+  Cloudflare's edge cert.
+- After issuing certs, you may flip back to "Proxied" if you want the CDN —
+  but then switch Caddy to use **DNS-01** challenge with Cloudflare API token,
+  otherwise the renewal in 60 days will fail.
+
+```bash
+# Quick check: must show your VPS IP, not a Cloudflare IP
+getent hosts live.jazzrelaxation.com
+```
+
+### 6.2 Caddy gets stuck if DNS isn't ready when it first starts
+
+If Caddy starts before the A record propagates, ACME fails with
+`NXDOMAIN looking up A` and Caddy enters exponential backoff (next retry can
+be 15–30 minutes away). Symptom: `curl: (35) ... tlsv1 alert internal error`.
+
+Fix once DNS is correct:
+
+```bash
+systemctl restart caddy
+# wait ~10 s, then:
+curl -I https://live.jazzrelaxation.com/
+```
+
+A plain `systemctl reload caddy` is **not** enough — it does not reset the
+backoff timer. Always **restart**.
+
+### 6.3 Caddy log directory permission
+
+The Debian package creates `/var/log/caddy` owned by root, but the service
+runs as user `caddy`. Without fixing ownership, every reload fails with
+`open /var/log/caddy/...: permission denied`.
+
+```bash
+chown -R caddy:caddy /var/log/caddy
+chmod 755 /var/log/caddy
+```
+
+The installer script does this automatically; if you change the log path in
+the Caddyfile, redo the chown.
+
+### 6.4 `EnvironmentFile` does not strip inline comments
+
+systemd's `EnvironmentFile=` parser treats `#` only at the **start** of a
+line. A line like:
+
+```env
+AUTO_REPLY_ENABLED=false   # safety: dry-run
+```
+
+is loaded as the literal string `false   # safety: dry-run`, and pydantic
+rejects it with `ValidationError: Input should be a valid boolean`.
+
+Always put comments on their own line:
+
+```env
+# Safety: dry-run
+AUTO_REPLY_ENABLED=false
+```
+
+The shipped `.env.example` follows this rule.
+
+### 6.5 Caddy reload hangs while it's obtaining a new cert
+
+If you change the Caddyfile to add a new domain and run
+`systemctl reload caddy`, the reload command can block until ACME completes
+or systemd's reload timeout fires. Symptom: shell sits there for 90+ s.
+
+Use `caddy validate --config /etc/caddy/Caddyfile` to syntax-check first,
+then `systemctl restart caddy` — it returns immediately and ACME runs in the
+background.
+
+### 6.6 ClawHub rate limit (HTTP 429) when installing the skill
+
+```
+$ openclaw skills install facebook-page
+ClawHub /api/v1/download failed (429): Rate limit exceeded
+```
+
+Workaround used in the installer: `git clone` the skill straight into the
+workspace:
+
+```bash
+git clone https://github.com/tinbeta/facebook-page-skill.git \
+  /root/.openclaw/workspace/skills/facebook-page
+```
+
+OpenClaw scans the workspace `skills/` directory at startup and treats it
+identically to a ClawHub-installed skill. `openclaw skills list` should now
+show `📦facebook  ready  openclaw-workspace`.
+
+### 6.7 OpenClaw `onboard` is interactive by default
+
+If you forget the `--non-interactive` flag, `openclaw onboard` blocks
+forever waiting for keyboard input — and SSH+systemd will time out the
+command. The non-interactive incantation we use:
+
+```bash
+openclaw onboard \
+  --non-interactive --accept-risk \
+  --install-daemon --flow quickstart \
+  --auth-choice skip \
+  --gateway-bind loopback \
+  --gateway-auth token
+```
+
+`--auth-choice skip` lets you postpone picking an LLM provider. Add it later
+with `openclaw configure --section providers`.
+
+### 6.8 OpenClaw runs as a `systemd --user` unit, not a system unit
+
+The daemon installs to `/root/.config/systemd/user/openclaw-gateway.service`
+and is enabled via `loginctl enable-linger root` (the installer does this
+silently). Status check:
+
+```bash
+# Wrong: nothing shown
+systemctl status openclaw-gateway
+
+# Right:
+systemctl --user --machine=root@.host status openclaw-gateway
+journalctl --user --user-unit openclaw-gateway -f
+```
+
+### 6.9 Postgres "could not change directory to /root" warnings
+
+```
+$ sudo -u postgres psql -c "..."
+could not change directory to "/root": Permission denied
+```
+
+Cosmetic only — postgres cannot `cd` into root's home. The query still runs.
+Either `cd /tmp` first or ignore the warning.
+
+### 6.10 Contabo images ship with cups + xrdp listening
+
+Default Contabo Ubuntu 22.04 has CUPS on `:631` and xrdp on `:3389/3350`.
+You don't need them and ufw blocks external access, but they're worth
+disabling:
+
+```bash
+systemctl disable --now xrdp xrdp-sesman 2>/dev/null
+systemctl mask cups cups-browsed 2>/dev/null
+```
+
+The installer does this.
+
+### 6.11 Webhook signature verification
+
+Meta signs every webhook POST with `X-Hub-Signature-256` using your
+**App Secret**. The handler refuses requests with a bad signature.
+
+If you see `Invalid signature, dropping event` in `/var/log/fb-webhook.log`
+during testing, double-check that:
+
+1. `FB_APP_SECRET` in `.env` matches the App Secret in
+   <https://developers.facebook.com/> → Settings → Basic.
+2. You restarted `fb-webhook` after editing `.env`.
+3. The "Test" button in the Meta UI uses the **App** signature; if you're
+   using `curl` to send fake events from a script, you have to sign them with
+   the same secret or temporarily comment out the signature check.
+
+### 6.12 The 24-hour Messenger window
+
+The default `fb_client.send_message()` uses
+`messaging_type=RESPONSE`. That works only for the first 24 h after the
+user's last inbound message. After that, Meta returns
+`(#10) This message is sent outside of allowed window`.
+
+For broadcasts, customer-care follow-ups, etc., switch to
+`messaging_type=MESSAGE_TAG` with a valid tag (`HUMAN_AGENT`,
+`CONFIRMED_EVENT_UPDATE`, `POST_PURCHASE_UPDATE`). See the comment in
+`fb-webhook/app/fb_client.py`.
+
+### 6.13 Page Token expires anyway?
+
+If your Graph API call returns `(#190) Error validating access token`:
+
+- You probably saved the **short-lived user token** by accident. Re-run the
+  3-step exchange in `~/.openclaw/workspace/skills/facebook-page/SKILL.md`.
+- The Page Token only becomes never-expiring if you exchange it from the
+  **long-lived user token** (60-day) — not directly from the short-lived
+  one.
+- Verify with:
+  ```bash
+  curl "https://graph.facebook.com/v21.0/debug_token?input_token=$FB_PAGE_TOKEN&access_token=$FB_APP_ID|$FB_APP_SECRET"
+  ```
+  Look for `"expires_at": 0` in the response.
+
+### 6.14 Comments not arriving
+
+Two separate subscriptions are needed in the Meta dashboard:
+
+1. **Webhook → Page object**, fields `messages` + `messaging_postbacks` →
+   delivers Messenger inbox.
+2. **Webhook → Page object**, field `feed` → delivers post comments.
+
+Most people add `messages` and forget `feed`. Comments will silently never
+arrive. Re-check at
+<https://developers.facebook.com/> → App → Webhooks → Page.
+
+### 6.15 `fb-webhook` boots but `/healthz` returns 502 from `api....`
+
+That means Caddy reached your VPS but uvicorn isn't on `127.0.0.1:8000`.
+Check:
+
+```bash
+ss -tlnp | grep 8000          # uvicorn must be listening
+journalctl -u fb-webhook -n 50 # boot errors (usually .env)
+```
+
+### 6.16 NodeSource setup script may fail on non-default architectures
+
+The `setup_24.x` script supports x86_64 and arm64 only. On exotic VPSes
+(s390x, riscv) you'll need to install Node from <https://nodejs.org/dist>
+manually. Check with `dpkg --print-architecture`.
+
+### 6.17 OpenClaw + glibc
+
+OpenClaw's prebuilt binaries assume glibc ≥ 2.31. Ubuntu 22.04 ships
+2.35 → fine. Older distros (Ubuntu 18.04, Debian 10) will need either an
+upgrade or building OpenClaw from source.
+
+### 6.18 fail2ban whitelist your own IP
+
+If you SSH a lot from your home IP, add yourself to fail2ban's whitelist
+before the first ban:
+
+```bash
+echo '[DEFAULT]
+ignoreip = 127.0.0.1/8 ::1 <YOUR_HOME_IP>/32' \
+  > /etc/fail2ban/jail.d/00-whitelist.conf
+systemctl restart fail2ban
+```
+
+### 6.19 Quick all-services smoke test
+
+Run after install completes:
+
+```bash
+for s in caddy postgresql redis-server fb-webhook fail2ban; do
+  printf "%-20s %s\n" "$s" "$(systemctl is-active $s)"
+done
+systemctl --user --machine=root@.host is-active openclaw-gateway
+
+curl -sI https://live.jazzrelaxation.com/ | head -1
+curl  -s https://api.jazzrelaxation.com/healthz
+```
+
+Expected:
+
+```
+caddy             active
+postgresql        active
+redis-server      active
+fb-webhook        active
+fail2ban          active
+openclaw-gateway  active
+
+HTTP/2 200
+{"status":"ok","auto_reply":false}
+```
 
 ---
 
