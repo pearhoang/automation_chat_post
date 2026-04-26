@@ -484,6 +484,36 @@ If your Graph API call returns `(#190) Error validating access token`:
   ```
   Look for `"expires_at": 0` in the response.
 
+### 6.13b Short-lived token missing scopes → `(#200) ... permissions`
+
+If `fb-token-exchange.sh` succeeds at the page-token step but Step 4
+(subscribe webhook) fails with:
+
+```
+(#200) To subscribe to the messages field, one of these permissions
+is needed: pages_messaging.
+To subscribe to the feed field, one of these permissions is needed:
+pages_manage_metadata.
+```
+
+…the short-lived **user** token you generated in Graph API Explorer did
+not have the right scopes ticked. The Page Token derived from it
+inherits the same scope set, so re-running Step 4 won't help.
+
+Fix:
+
+1. Open <https://developers.facebook.com/tools/explorer/>.
+2. Pick your app, click **Add a Permission**, and tick **all** of:
+   `pages_manage_posts`, `pages_messaging`, `pages_read_engagement`,
+   `pages_manage_engagement`, `pages_show_list`, `pages_manage_metadata`.
+3. Click **Generate Access Token** again — you must regenerate;
+   ticking a scope on an already-issued token does not retroactively
+   add it.
+4. Re-run `fb-token-exchange.sh` with the new token. The script's
+   Step 0 will up-front diff the granted scopes against the required
+   set and abort early if anything is missing, so you don't waste a
+   short-lived token on a doomed exchange.
+
 ### 6.14 Comments not arriving
 
 Two separate subscriptions are needed in the Meta dashboard:

@@ -55,6 +55,43 @@ FB_VERIFY_TOKEN="${FB_VERIFY_TOKEN:-$(openssl rand -hex 32)}"
 GRAPH="https://graph.facebook.com/${FB_GRAPH_VERSION}"
 
 # ---------------------------------------------------------------------------
+log "Step 0/4 — Validate scopes on the input token"
+REQUIRED_SCOPES=(pages_messaging pages_manage_posts pages_manage_metadata
+                 pages_manage_engagement pages_read_engagement pages_show_list)
+DBG_IN=$(curl -sG "${GRAPH}/debug_token" \
+  --data-urlencode "input_token=${FB_SHORT_LIVED_USER_TOKEN}" \
+  --data-urlencode "access_token=${FB_APP_ID}|${FB_APP_SECRET}")
+if echo "$DBG_IN" | jq -e '.data.error' >/dev/null 2>&1 \
+   || echo "$DBG_IN" | jq -e '.error' >/dev/null 2>&1; then
+  echo "$DBG_IN" | jq .
+  die "input token failed debug_token check (wrong app/secret or expired token?)"
+fi
+GOT_SCOPES=$(echo "$DBG_IN" | jq -r '.data.scopes | join(" ")')
+MISSING=()
+for s in "${REQUIRED_SCOPES[@]}"; do
+  case " $GOT_SCOPES " in *" $s "*) : ;; *) MISSING+=("$s") ;; esac
+done
+if [ ${#MISSING[@]} -gt 0 ]; then
+  printf "${RED}Missing scopes: %s${NC}\n" "${MISSING[*]}"
+  cat <<EOF
+
+The short-lived user token does NOT have all the scopes the webhook needs.
+Steps to fix:
+
+  1. Open https://developers.facebook.com/tools/explorer/
+  2. Pick your app, click "Add a Permission" and tick:
+        ${MISSING[@]}
+     (keep the ones you already had ticked)
+  3. Click "Generate Access Token" — you must regenerate;
+     ticking a scope on the old token does not retroactively grant it.
+  4. Copy the new token and re-run this script.
+
+EOF
+  die "abort — missing scopes"
+fi
+ok "scopes OK: ${GOT_SCOPES}"
+
+# ---------------------------------------------------------------------------
 log "Step 1/4 — Short-lived → Long-lived user token (60 days)"
 LL_RESP=$(curl -sG "${GRAPH}/oauth/access_token" \
   --data-urlencode "grant_type=fb_exchange_token" \
