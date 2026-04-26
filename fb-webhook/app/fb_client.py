@@ -51,5 +51,69 @@ class FacebookClient:
         r.raise_for_status()
         return r.json()
 
+    # ------------------------------------------------------------------
+    # Posting on the Page feed
+    # ------------------------------------------------------------------
+    async def post_text(self, message: str, link: str | None = None) -> dict:
+        """Publish a text (or text+link) post on the Page feed.
+
+        Requires the `pages_manage_posts` scope on the Page Token.
+        """
+        url = f"{self.base}/{self.page_id}/feed"
+        data: dict[str, str] = {"message": message}
+        if link:
+            data["link"] = link
+        params = {"access_token": self.page_token}
+        r = await self._http.post(url, params=params, data=data)
+        if r.status_code >= 400:
+            log.error("post_text failed status=%s body=%s", r.status_code, r.text)
+        r.raise_for_status()
+        return r.json()
+
+    async def post_photo_url(self, photo_url: str, caption: str = "") -> dict:
+        """Publish a photo to the Page feed by URL (Graph downloads the image).
+
+        Requires `pages_manage_posts`. Returns `{post_id, id}`.
+        """
+        url = f"{self.base}/{self.page_id}/photos"
+        data: dict[str, str] = {"url": photo_url}
+        if caption:
+            data["caption"] = caption
+        params = {"access_token": self.page_token}
+        r = await self._http.post(url, params=params, data=data, timeout=60.0)
+        if r.status_code >= 400:
+            log.error("post_photo_url failed status=%s body=%s", r.status_code, r.text)
+        r.raise_for_status()
+        return r.json()
+
+    async def post_photo_bytes(
+        self, photo_bytes: bytes, filename: str = "image.jpg", caption: str = ""
+    ) -> dict:
+        """Publish a photo by uploading raw bytes (multipart)."""
+        url = f"{self.base}/{self.page_id}/photos"
+        files = {"source": (filename, photo_bytes, "application/octet-stream")}
+        data: dict[str, str] = {}
+        if caption:
+            data["caption"] = caption
+        params = {"access_token": self.page_token}
+        r = await self._http.post(
+            url, params=params, data=data, files=files, timeout=120.0
+        )
+        if r.status_code >= 400:
+            log.error("post_photo_bytes failed status=%s body=%s", r.status_code, r.text)
+        r.raise_for_status()
+        return r.json()
+
+    async def debug_token(self) -> dict:
+        """Inspect the Page Token (expiry, scopes). Used by /status."""
+        url = f"{self.base}/debug_token"
+        params = {
+            "input_token": self.page_token,
+            "access_token": self.page_token,
+        }
+        r = await self._http.get(url, params=params)
+        r.raise_for_status()
+        return r.json()
+
 
 fb = FacebookClient()

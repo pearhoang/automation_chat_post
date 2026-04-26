@@ -234,6 +234,78 @@ openclaw cron add --name daily-promo --schedule "0 19 * * *" \
 
 ---
 
+## 4b. FastAPI Telegram admin bot (đường ngắn, không qua OpenClaw)
+
+Thay cho cách OpenClaw ở `§4`, repo có sẵn 1 admin bot tích hợp thẳng vào
+`fb-webhook` (cùng process, cùng domain) — nhanh nhất nếu bạn chỉ cần đăng
+bài lên Page từ Telegram.
+
+### 4b.1 Tạo bot
+
+1. Mở https://t.me/BotFather → `/newbot` → đặt tên → lấy **token**
+2. Sinh 1 secret để xác thực webhook:
+   ```bash
+   openssl rand -hex 32
+   ```
+3. Gắn vào `/opt/fb-webhook/.env`:
+   ```bash
+   sed -i \
+     -e "s|^TELEGRAM_BOT_TOKEN=.*|TELEGRAM_BOT_TOKEN=<token-từ-BotFather>|" \
+     -e "s|^TELEGRAM_ADMIN_CHAT_ID=.*|TELEGRAM_ADMIN_CHAT_ID=|" \
+     -e "s|^TELEGRAM_WEBHOOK_SECRET=.*|TELEGRAM_WEBHOOK_SECRET=<chuỗi-vừa-sinh>|" \
+     /opt/fb-webhook/.env
+   systemctl restart fb-webhook
+   ```
+
+### 4b.2 Đăng ký webhook với Telegram
+
+```bash
+sudo /usr/local/bin/install-telegram-webhook.sh
+```
+(Script gọi `setWebhook` trỏ về `https://api.jazzrelaxation.com/webhook/telegram`
+kèm `secret_token`.)
+
+### 4b.3 Lấy chat_id của bạn → whitelist
+
+Mở chat với bot vừa tạo trên Telegram → gõ `/whoami` → bot trả lại 1 dãy số.
+Set vào `.env` rồi restart:
+
+```bash
+sed -i "s|^TELEGRAM_ADMIN_CHAT_ID=.*|TELEGRAM_ADMIN_CHAT_ID=<chat_id>|" \
+  /opt/fb-webhook/.env
+systemctl restart fb-webhook
+```
+
+### 4b.4 Lệnh có sẵn
+
+| Lệnh | Tác dụng |
+|---|---|
+| `/post <nội dung>` | Đăng bài text lên Page |
+| `/post_link <url> \| <caption>` | Đăng bài kèm link |
+| `/post_img <caption>` (gửi kèm 1 ảnh) | Đăng bài có ảnh |
+| `/status` | Health check + thông tin Page Token |
+| `/whoami` | Trả về `chat_id` (dùng để whitelist) |
+| `/help` | Liệt kê lệnh |
+
+Bot trả về URL bài viết sau khi đăng dạng `https://www.facebook.com/<post_id>`.
+
+### 4b.5 Bảo mật
+
+* `secret_token` chặn POST giả mạo (FastAPI trả 401 nếu sai header)
+* Whitelist `TELEGRAM_ADMIN_CHAT_ID` chặn user khác ra lệnh
+* Dùng cùng cert TLS sẵn có ở `api.jazzrelaxation.com`
+
+### 4b.6 Đổi token nếu lộ
+
+```bash
+# 1. BotFather → /revoke → chọn bot → token mới
+sed -i "s|^TELEGRAM_BOT_TOKEN=.*|TELEGRAM_BOT_TOKEN=<token-mới>|" /opt/fb-webhook/.env
+systemctl restart fb-webhook
+sudo /usr/local/bin/install-telegram-webhook.sh
+```
+
+---
+
 ## 5. Day-2 ops
 
 ### Service status

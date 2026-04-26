@@ -19,6 +19,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from .config import settings
 from .fb_client import fb
 from .llm import draft_reply
+from .telegram import handle_update as tg_handle_update, tg
 
 logging.basicConfig(
     level=settings.log_level,
@@ -154,6 +155,36 @@ async def _handle_page_change(change: dict) -> None:
     await fb.reply_comment(comment_id, reply)
 
 
+# ---------------------------------------------------------------------------
+# Telegram admin bot webhook
+# ---------------------------------------------------------------------------
+@app.post("/webhook/telegram")
+async def telegram_webhook(request: Request):
+    if not settings.telegram_bot_token:
+        raise HTTPException(status_code=404, detail="telegram disabled")
+
+    # Telegram echoes back the secret token we registered with setWebhook.
+    # We refuse the request unless it matches — anyone can guess our URL.
+    if settings.telegram_webhook_secret:
+        sent = request.headers.get("x-telegram-bot-api-secret-token", "")
+        if not hmac.compare_digest(sent, settings.telegram_webhook_secret):
+            log.warning("telegram bad secret_token (ignored)")
+            raise HTTPException(status_code=401, detail="bad secret_token")
+
+    try:
+        update = await request.json()
+    except Exception:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail="invalid json") from None
+
+    try:
+        await tg_handle_update(update)
+    except Exception:
+        log.exception("tg_handle_update crashed")
+    # Always 200 OK so Telegram doesn't keep retrying a poisoned update.
+    return {"ok": True}
+
+
 @app.on_event("shutdown")
 async def _shutdown() -> None:
     await fb.aclose()
+    await tg.aclose()

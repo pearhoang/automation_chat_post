@@ -32,6 +32,19 @@ class Settings(BaseSettings):
     # Behaviour
     auto_reply_enabled: bool = False
     human_review_queue: bool = True
+
+    # Telegram admin bot — used for posting/managing the Page from chat.
+    # If `telegram_admin_chat_id` is empty the bot will only respond to
+    # /start and /whoami (so the owner can discover their own chat_id).
+    telegram_bot_token: str = ""
+    telegram_admin_chat_id: str = ""
+    # Optional shared secret echoed back by Telegram in
+    # `X-Telegram-Bot-Api-Secret-Token`. Acts as an authn check on the
+    # public webhook so random POSTs cannot trigger commands.
+    telegram_webhook_secret: str = ""
+
+    # Legacy review-bot fields (kept for backwards compat with older .env
+    # files; the admin bot above replaces them).
     telegram_review_bot_token: str = ""
     telegram_review_chat_id: str = ""
 
