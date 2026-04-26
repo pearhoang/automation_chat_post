@@ -41,12 +41,11 @@ async def draft_reply(user_text: str, *, context: str | None = None) -> str:
         "Content-Type": "application/json",
     }
 
+    base = settings.openai_base_url.rstrip("/")
+    url = f"{base}/chat/completions"
+
     async with httpx.AsyncClient(timeout=20.0) as http:
-        r = await http.post(
-            "https://api.openai.com/v1/chat/completions",
-            headers=headers,
-            json=payload,
-        )
+        r = await http.post(url, headers=headers, json=payload)
         if r.status_code >= 400:
             log.error("LLM error %s: %s", r.status_code, r.text)
             return ""

@@ -18,9 +18,12 @@ class Settings(BaseSettings):
     fb_verify_token: str = "change-me"
     fb_graph_version: str = "v21.0"
 
-    # LLM
+    # LLM (works with OpenAI directly or any OpenAI-compatible gateway
+    # such as OpenRouter, cx.ai, LiteLLM, vLLM, Ollama, etc. — point
+    # `openai_base_url` at the gateway's `/v1` endpoint.)
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
+    openai_base_url: str = "https://api.openai.com/v1"
 
     # Local services
     redis_url: str = "redis://127.0.0.1:6379/0"
