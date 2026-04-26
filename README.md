@@ -114,28 +114,66 @@ curl   https://api.jazzrelaxation.com/healthz
 
 ## 3. Facebook integration
 
-### 3a. Create the FB App + get tokens
+### 3a. The two parts that have to be done by hand (FB has no API for them)
 
-Follow the recipe in
-`/root/.openclaw/workspace/skills/facebook-page/SKILL.md` (it is the
-`tinbeta/facebook-page-skill` README). Required values:
+Meta does **not** expose a public API for creating Facebook Apps or for
+generating the initial user token, and trying to script it with browser
+automation is exactly the kind of activity that gets the source FB account
+flagged. So:
 
-| Variable | Value |
-|---|---|
-| `FB_APP_ID` | App ID from developer dashboard |
-| `FB_APP_SECRET` | App Secret |
-| `FB_PAGE_ID` | numeric Page ID |
-| `FB_PAGE_TOKEN` | Never-expire page token (`expires_at: 0`) |
-| `FB_VERIFY_TOKEN` | Any random string you choose; you will paste the same value into the FB App webhook UI |
+1. **Create a Facebook App** at <https://developers.facebook.com/>:
+   - "Create App" → choose **Business** type → name it.
+   - Settings → Basic → write down **App ID** and **App Secret**.
+   - Add the **Messenger** product, add the **Webhooks** product.
+   - Under Messenger → "Access Tokens", connect your Page → write down
+     **Page ID**.
+2. **Generate a short-lived user token** in
+   <https://developers.facebook.com/tools/explorer/>:
+   - Pick your app from the dropdown.
+   - "Get Token" → "Get User Access Token".
+   - Tick scopes: `pages_manage_posts`, `pages_messaging`,
+     `pages_read_engagement`, `pages_manage_engagement`,
+     `pages_show_list`, `pages_manage_metadata`.
+   - Click **Generate Access Token** and copy the long string starting
+     with `EAA…`. This expires in ~1 hour, so do step 3b right after.
 
-### 3b. Fill in `.env`
+That's it. ~5 minutes.
+
+### 3b. Let the helper script do the rest
+
+The script `scripts/fb-token-exchange.sh` automates **all the remaining
+steps**:
+
+- short-lived → long-lived user token (60 d)
+- long-lived user token → **never-expire** page token
+- verify with `debug_token` (`expires_at == 0`)
+- subscribe the Page to webhook fields (`messages`, `messaging_postbacks`,
+  `feed`, `messaging_referrals`, `message_deliveries`)
+- write `FB_APP_ID`, `FB_APP_SECRET`, `FB_PAGE_ID`, `FB_PAGE_TOKEN`,
+  `FB_VERIFY_TOKEN` into `/opt/fb-webhook/.env`
+- restart `fb-webhook`
 
 ```bash
-sudo -e /opt/fb-webhook/.env       # paste real values
-sudo systemctl restart fb-webhook
+ssh root@<vps>
+FB_APP_ID=1234567890 \
+FB_APP_SECRET=abcdef0123456789 \
+FB_PAGE_ID=987654321 \
+FB_SHORT_LIVED_USER_TOKEN=EAAB... \
+bash /tmp/fb-token-exchange.sh
 ```
 
-You can also set `OPENAI_API_KEY` / `OPENAI_MODEL` here.
+Or run it without env vars and it will prompt for each value.
+
+A random `FB_VERIFY_TOKEN` is generated for you — the script prints it at
+the end so you can paste it into the Meta dashboard.
+
+After this you only need to add `OPENAI_API_KEY` / `OPENAI_MODEL` to
+`.env`:
+
+```bash
+sudo -e /opt/fb-webhook/.env       # add OPENAI_API_KEY=sk-…
+sudo systemctl restart fb-webhook
+```
 
 ### 3c. Subscribe the webhook in Meta dashboard
 

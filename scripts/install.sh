@@ -33,9 +33,9 @@ step_apt() {
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
   apt-get install -y -qq \
-    curl wget git ufw fail2ban htop tmux unzip rsync ca-certificates gnupg \
+    curl wget git jq ufw fail2ban htop tmux unzip rsync ca-certificates gnupg \
     lsb-release software-properties-common build-essential debian-keyring \
-    debian-archive-keyring apt-transport-https
+    debian-archive-keyring apt-transport-https dnsutils
 }
 
 step_firewall() {
@@ -192,6 +192,15 @@ step_webhook() {
   systemctl enable --now fb-webhook
 }
 
+step_token_helper() {
+  log "Install /usr/local/bin/fb-token-exchange.sh helper"
+  if [ -f "$(dirname "$0")/fb-token-exchange.sh" ]; then
+    install -m 0755 "$(dirname "$0")/fb-token-exchange.sh" /usr/local/bin/fb-token-exchange.sh
+  elif [ -f /opt/automation_chat_post/scripts/fb-token-exchange.sh ]; then
+    install -m 0755 /opt/automation_chat_post/scripts/fb-token-exchange.sh /usr/local/bin/fb-token-exchange.sh
+  fi
+}
+
 step_summary() {
   log "Service status"
   systemctl --no-pager is-active caddy postgresql redis-server fb-webhook fail2ban || true
@@ -245,4 +254,5 @@ step_caddy
 step_site
 step_openclaw
 step_webhook
+step_token_helper
 step_summary
