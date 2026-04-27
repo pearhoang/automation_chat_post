@@ -71,6 +71,46 @@ class FacebookClient:
         r.raise_for_status()
         return r.json()
 
+    async def private_reply_to_comment(self, comment_id: str, text: str) -> dict:
+        """Send a private DM to the author of a Page comment.
+
+        Facebook's Private Reply feature: the Page can DM whoever wrote
+        a public comment within 7 days, identifying them by comment_id
+        (we never need their PSID directly). Requires the
+        ``pages_messaging`` permission.
+        """
+        import json as _json
+        url = f"{self.base}/me/messages"
+        params = {"access_token": self.page_token}
+        payload = {
+            "recipient": {"comment_id": comment_id},
+            "message": {"text": text},
+        }
+        r = await self._http.post(url, params=params, json=payload)
+        if r.status_code >= 400:
+            log.error(
+                "private_reply_to_comment failed status=%s body=%s",
+                r.status_code, r.text,
+            )
+        r.raise_for_status()
+        return r.json()
+
+    async def fetch_post(self, post_id: str) -> dict:
+        """Read a post's message + permalink so the LLM can reference it."""
+        url = f"{self.base}/{post_id}"
+        params = {
+            "access_token": self.page_token,
+            "fields": "id,message,created_time,permalink_url",
+        }
+        r = await self._http.get(url, params=params)
+        if r.status_code >= 400:
+            log.warning(
+                "fetch_post failed status=%s body=%s",
+                r.status_code, r.text[:200],
+            )
+            return {}
+        return r.json()
+
     async def hide_comment(self, comment_id: str) -> dict:
         url = f"{self.base}/{comment_id}"
         params = {"access_token": self.page_token}

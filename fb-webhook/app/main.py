@@ -34,6 +34,14 @@ from .telegram import handle_update as tg_handle_update, tg
 # by the webhook and never forwarded to the customer.
 _SEND_PHOTOS_RE = re.compile(r"^\s*\[SEND_PHOTOS:\s*([A-Z0-9_-]+)\s*\]\s*", re.I)
 
+# Comment replies may emit "[PRIVATE_REPLY]<dm body>\n<public reply>" so we
+# can both DM the commenter (Private Reply) AND post the public response.
+# The LLM is expected to put the private message FIRST (a single line, no
+# newlines) followed by the public-comment body.
+_PRIVATE_REPLY_RE = re.compile(
+    r"^\s*\[PRIVATE_REPLY\]\s*(.+?)\s*(?:\n+(.+))?\Z", re.S | re.I
+)
+
 logging.basicConfig(
     level=settings.log_level,
     format="%(asctime)s %(levelname)s %(name)s :: %(message)s",
@@ -288,20 +296,66 @@ async def _handle_page_change(change: dict) -> None:
         log.info("COMMENT skip_reply id=%s label=%s", comment_id, label)
         return
 
-    reply = await draft_reply(
-        text,
-        context=(
-            "Khách đang comment vào 1 bài post của Page. "
-            f"(Internal classifier: label={label}, confidence={confidence:.2f}.)\n\n"
-            + inventory_context()
-        ),
-    )
+    # Pull the post body so the LLM can reference what the customer is
+    # actually looking at — e.g. "iPhone 13 Pro Max 256GB Sierra Blue,
+    # 15.5tr". Best-effort: if the API call fails we still reply.
+    post_block = ""
+    if post_id:
+        try:
+            post = await fb.fetch_post(post_id)
+            post_msg = (post.get("message") or "").strip()
+            permalink = post.get("permalink_url") or ""
+            if post_msg or permalink:
+                post_block = (
+                    "Bài post liên quan:\n"
+                    + (f"  link: {permalink}\n" if permalink else "")
+                    + (f"  nội dung: {post_msg}\n" if post_msg else "")
+                )
+        except Exception:  # noqa: BLE001
+            log.exception("fetch_post failed post_id=%s", post_id)
+
+    ctx_parts = [
+        "Khách đang comment vào 1 bài post của Page.",
+        f"(Internal classifier: label={label}, confidence={confidence:.2f}.)",
+    ]
+    if post_block:
+        ctx_parts.append(post_block)
+    ctx_parts.append(inventory_context())
+
+    reply = await draft_reply(text, context="\n\n".join(ctx_parts))
     if not reply:
         return
     if settings.human_review_queue:
         log.info("REVIEW comment %s :: %s", comment_id, reply)
         return
-    await fb.reply_comment(comment_id, reply)
+
+    private_msg, public_msg = _extract_private_reply(reply)
+    if private_msg:
+        try:
+            await fb.private_reply_to_comment(comment_id, private_msg)
+            log.info("COMMENT private_reply id=%s", comment_id)
+        except Exception:  # noqa: BLE001
+            log.exception("private_reply_to_comment failed id=%s", comment_id)
+    if public_msg:
+        await fb.reply_comment(comment_id, public_msg)
+
+
+def _extract_private_reply(reply: str) -> tuple[str | None, str]:
+    """Parse a leading ``[PRIVATE_REPLY]<dm>\\n<public>`` token.
+
+    Returns ``(private_msg, public_msg)``. If the token is absent the
+    whole reply is treated as the public-comment body.
+    """
+    m = _PRIVATE_REPLY_RE.match(reply)
+    if not m:
+        return None, reply.strip()
+    private_msg = m.group(1).strip()
+    public_msg = (m.group(2) or "").strip()
+    if not public_msg:
+        # LLM forgot to add a public reply — fall back to a generic
+        # placeholder so the post still has a public response.
+        public_msg = "ib bạn nha"
+    return private_msg, public_msg
 
 
 # ---------------------------------------------------------------------------
