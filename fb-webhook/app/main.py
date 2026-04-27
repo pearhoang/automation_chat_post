@@ -19,7 +19,12 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request, Response
 
 from .config import settings
-from .conversation import append_turn, load_history
+from .conversation import (
+    append_turn,
+    load_history,
+    load_post_context,
+    set_post_context,
+)
 from .fb_client import fb
 from .inventory import (
     context_for_llm as inventory_context,
@@ -135,9 +140,23 @@ async def _handle_messenger_event(evt: dict) -> None:
         return
 
     history = load_history(sender)
+
+    ctx_parts: list[str] = []
+    post_ctx = load_post_context(sender)
+    if post_ctx:
+        block = ["Bài post liên quan (DM này nối tiếp comment khách ở post):"]
+        if post_ctx.get("permalink_url"):
+            block.append(f"  link: {post_ctx['permalink_url']}")
+        if post_ctx.get("post_message"):
+            block.append(f"  nội dung: {post_ctx['post_message']}")
+        if post_ctx.get("comment_text"):
+            block.append(f"  comment gốc của khách: {post_ctx['comment_text']}")
+        ctx_parts.append("\n".join(block))
+    ctx_parts.append(inventory_context())
+
     reply = await draft_reply(
         text,
-        context=inventory_context(),
+        context="\n\n".join(ctx_parts),
         history=history,
     )
     if not reply:
@@ -147,6 +166,18 @@ async def _handle_messenger_event(evt: dict) -> None:
         # TODO: push to Telegram review bot for approval
         log.info("REVIEW draft for %s :: %s", sender, reply)
         return
+
+    # Defense-in-depth: if the LLM mistakenly emits [PRIVATE_REPLY] in a
+    # Messenger DM (it shouldn't — that token is only for comment handler),
+    # strip the token but keep the full body so the customer still gets the
+    # informative DM-style answer. We choose the LONGER of the two bodies
+    # since the LLM tends to put detail on the "private" side and a one-line
+    # public ack on the "public" side; in a DM we want the detailed one.
+    pr_match = _PRIVATE_REPLY_RE.match(reply)
+    if pr_match:
+        body_a = (pr_match.group(1) or "").strip()
+        body_b = (pr_match.group(2) or "").strip()
+        reply = (body_a if len(body_a) >= len(body_b) else body_b) or reply
 
     photo_code, text_reply = _extract_photo_directive(reply)
     if photo_code:
@@ -332,8 +363,33 @@ async def _handle_page_change(change: dict) -> None:
     private_msg, public_msg = _extract_private_reply(reply)
     if private_msg:
         try:
-            await fb.private_reply_to_comment(comment_id, private_msg)
-            log.info("COMMENT private_reply id=%s", comment_id)
+            resp = await fb.private_reply_to_comment(comment_id, private_msg)
+            log.info("COMMENT private_reply id=%s resp=%s", comment_id, resp)
+            # FB returns the commenter's PSID in `recipient_id` — use it
+            # to seed conversation memory so when the customer replies in
+            # Messenger, the LLM still has the post + DM context.
+            psid = (resp or {}).get("recipient_id")
+            if psid:
+                try:
+                    post_msg = ""
+                    permalink = ""
+                    if post_id:
+                        post = await fb.fetch_post(post_id)
+                        post_msg = (post.get("message") or "").strip()
+                        permalink = post.get("permalink_url") or ""
+                    set_post_context(
+                        str(psid),
+                        post_id=post_id,
+                        post_message=post_msg,
+                        permalink_url=permalink,
+                        comment_text=text,
+                        private_dm=private_msg,
+                    )
+                except Exception:  # noqa: BLE001
+                    log.exception(
+                        "set_post_context failed psid=%s post_id=%s",
+                        psid, post_id,
+                    )
         except Exception:  # noqa: BLE001
             log.exception("private_reply_to_comment failed id=%s", comment_id)
     if public_msg:

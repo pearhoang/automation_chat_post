@@ -1,13 +1,17 @@
 """Per-sender short-term conversation memory for Messenger.
 
 Stored as JSON files at ``/opt/fb-webhook/conversations/{sender}.json``
-with the last N user/assistant turns, so the LLM has the context it
-needs to answer follow-ups like "cho xem ảnh máy đó đi" referring to a
-product mentioned 1-2 messages earlier.
+with the last N user/assistant turns plus an optional ``post_context``
+block (set when the conversation was started from a Page-comment private
+reply) so the LLM has the context it needs to answer follow-ups like
+"cho xem ảnh máy đó đi" — even across the boundary between a comment on
+a Page post and the resulting Messenger DM thread.
 
 Keep things small: we cap to ``MAX_TURNS`` user+assistant pairs (so
-``2 * MAX_TURNS`` messages) and prune anything older. Each turn also
-caps the stored text length to avoid runaway disk usage.
+``2 * MAX_TURNS`` messages) and prune anything older. ``post_context``
+is preserved across truncation because it carries the original product
+the customer was asking about (otherwise the LLM forgets which post the
+DM thread came from).
 """
 
 from __future__ import annotations
@@ -21,8 +25,8 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 STORE_DIR = Path("/opt/fb-webhook/conversations")
-MAX_TURNS = 6           # 6 user + 6 assistant = 12 messages max
-MAX_TEXT_LEN = 600      # truncate long inputs (rare on Messenger)
+MAX_TURNS = 12          # 12 user + 12 assistant = 24 messages max
+MAX_TEXT_LEN = 800      # truncate long inputs (rare on Messenger)
 
 _lock = threading.Lock()
 
@@ -35,22 +39,50 @@ def _path_for(sender: str) -> Path:
     return STORE_DIR / f"{_safe_id(sender)}.json"
 
 
-def load_history(sender: str) -> list[dict]:
-    """Return list of role/content dicts (oldest first) for the LLM."""
+def _read_raw(sender: str) -> dict:
     p = _path_for(sender)
     if not p.is_file():
-        return []
+        return {}
     try:
-        data = json.loads(p.read_text(encoding="utf-8"))
+        return json.loads(p.read_text(encoding="utf-8")) or {}
     except (OSError, json.JSONDecodeError) as exc:
         log.warning("conversation: cannot read %s: %s", p, exc)
-        return []
+        return {}
+
+
+def _write_raw(sender: str, data: dict) -> None:
+    p = _path_for(sender)
+    try:
+        STORE_DIR.mkdir(parents=True, exist_ok=True)
+        p.write_text(
+            json.dumps(data, ensure_ascii=False), encoding="utf-8"
+        )
+    except OSError as exc:
+        log.warning("conversation: cannot write %s: %s", p, exc)
+
+
+def load_history(sender: str) -> list[dict]:
+    """Return list of role/content dicts (oldest first) for the LLM."""
+    data = _read_raw(sender)
     msgs = data.get("messages") or []
     return [
         {"role": str(m.get("role", "")), "content": str(m.get("content", ""))}
         for m in msgs
         if m.get("role") in ("user", "assistant") and m.get("content")
     ]
+
+
+def load_post_context(sender: str) -> dict | None:
+    """Return the post-context dict (or None) for this sender.
+
+    The dict has keys ``post_id``, ``post_message``, ``permalink_url``,
+    ``comment_text`` (the original comment that triggered the DM).
+    """
+    data = _read_raw(sender)
+    pc = data.get("post_context")
+    if isinstance(pc, dict) and (pc.get("post_message") or pc.get("post_id")):
+        return pc
+    return None
 
 
 def append_turn(sender: str, user_text: str, assistant_text: str) -> None:
@@ -60,20 +92,63 @@ def append_turn(sender: str, user_text: str, assistant_text: str) -> None:
     user_text = user_text[:MAX_TEXT_LEN]
     assistant_text = assistant_text[:MAX_TEXT_LEN]
 
-    p = _path_for(sender)
     with _lock:
-        try:
-            STORE_DIR.mkdir(parents=True, exist_ok=True)
-            existing = load_history(sender)
-            existing.append({"role": "user", "content": user_text})
-            existing.append({"role": "assistant", "content": assistant_text})
-            # cap to MAX_TURNS pairs
+        data = _read_raw(sender)
+        msgs = data.get("messages") or []
+        msgs.append({"role": "user", "content": user_text})
+        msgs.append({"role": "assistant", "content": assistant_text})
+        # cap to MAX_TURNS pairs
+        limit = MAX_TURNS * 2
+        if len(msgs) > limit:
+            msgs = msgs[-limit:]
+        data["messages"] = msgs
+        _write_raw(sender, data)
+
+
+def set_post_context(
+    sender: str,
+    *,
+    post_id: str | None,
+    post_message: str | None,
+    permalink_url: str | None,
+    comment_text: str | None,
+    private_dm: str | None,
+) -> None:
+    """Record that this sender's DM thread started from a comment on a post.
+
+    Also seeds the conversation history with a synthetic turn so the LLM
+    sees the bot's first DM (which the customer received but which is
+    invisible to our regular Messenger webhook because it was sent via
+    Private Reply API, not as an inbound message).
+    """
+    with _lock:
+        data = _read_raw(sender)
+        pc = data.get("post_context") or {}
+        pc.update(
+            {
+                k: v
+                for k, v in {
+                    "post_id": post_id,
+                    "post_message": (post_message or "")[:1500],
+                    "permalink_url": permalink_url,
+                    "comment_text": (comment_text or "")[:MAX_TEXT_LEN],
+                }.items()
+                if v is not None
+            }
+        )
+        data["post_context"] = pc
+
+        # Seed the synthetic first turn so LLM history includes the DM
+        # we already sent. We frame the "user" side as the original
+        # public comment so it reads naturally to the model.
+        msgs = data.get("messages") or []
+        if private_dm and comment_text:
+            seed_user = f"[Khách comment ở bài post] {comment_text[:MAX_TEXT_LEN]}"
+            msgs.append({"role": "user", "content": seed_user})
+            msgs.append({"role": "assistant", "content": private_dm[:MAX_TEXT_LEN]})
             limit = MAX_TURNS * 2
-            if len(existing) > limit:
-                existing = existing[-limit:]
-            p.write_text(
-                json.dumps({"messages": existing}, ensure_ascii=False),
-                encoding="utf-8",
-            )
-        except OSError as exc:
-            log.warning("conversation: cannot write %s: %s", p, exc)
+            if len(msgs) > limit:
+                msgs = msgs[-limit:]
+            data["messages"] = msgs
+
+        _write_raw(sender, data)
