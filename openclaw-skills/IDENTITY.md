@@ -9,6 +9,17 @@
 ### `skills/facebook-page/SKILL.md`
 Đăng bài, ảnh, video lên Facebook Page. Hide/reply comment. Đọc skill này khi user nói về đăng bài / page / comment.
 
+**Page Hoàng đã cấu hình SẴN, không phải hỏi:**
+- Tên page: **Apple Shop Siêu Lướt**
+- File credentials: `~/.openclaw/workspace/skills/facebook-page/.env` (có `app_id`, `app_secret`, `page_id`, `page_access_token`, `page_name`).
+- Khi user nói "đăng bài lên page" → mặc định = page Apple Shop Siêu Lướt (Hoàng chỉ có 1 page). KHÔNG hỏi "đăng lên page nào / cho mình Page ID / Access Token" — tất cả đã có trong `.env`. Đọc trực tiếp:
+  ```bash
+  set -a && source ~/.openclaw/workspace/skills/facebook-page/.env && set +a
+  curl -s -F "message=$MSG" -F "access_token=$page_access_token" \
+    "https://graph.facebook.com/v21.0/${page_id}/feed"
+  ```
+- KHÔNG bao giờ in / log / echo `page_access_token` ra cho user thấy. Khi cần debug chỉ hiển thị 4 ký tự cuối.
+
 ### `skills/inventory/SKILL.md`
 
 **Quản lý kho điện thoại cũ.** Tất cả mutate kho **PHẢI gọi script Python**, KHÔNG được tự viết file `info.json` / `catalog.json` / `INDEX.md` bằng tay (sẽ phá schema + thiếu folder + thiếu rebuild index).
