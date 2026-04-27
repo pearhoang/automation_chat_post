@@ -83,6 +83,58 @@ def product_photos(code: str, *, max_photos: int = 5) -> list[Path]:
     return []
 
 
+def all_products() -> list[dict]:
+    """Return every product in the catalog (any status)."""
+    return list(load_catalog().get("products", []))
+
+
+def _normalize(text: str) -> str:
+    """Lowercase + strip diacritics + collapse whitespace for fuzzy match."""
+    import unicodedata
+
+    if not text:
+        return ""
+    nfkd = unicodedata.normalize("NFKD", text)
+    plain = "".join(c for c in nfkd if not unicodedata.combining(c))
+    return " ".join(plain.lower().split())
+
+
+def match_post_to_product(post_text: str) -> dict | None:
+    """Find the catalog product most likely referred to by a post body.
+
+    The post_text is the caption of a Page post (e.g. "iPhone 17 Pro
+    256GB Orange bản Mỹ, sạc 47 lần, pin 100%, giá 28.99tr"). We pick
+    the product whose model + storage + color all appear (substring,
+    diacritic-insensitive) inside the normalized post text. If multiple
+    match (e.g. 2 units of the same model), prefer the in_stock one.
+    """
+    if not post_text:
+        return None
+    haystack = _normalize(post_text)
+    candidates: list[tuple[tuple, dict]] = []
+    for p in all_products():
+        bits = [
+            _normalize(p.get("model", "")),
+            _normalize(p.get("storage", "")),
+            _normalize(p.get("color", "")),
+        ]
+        bits = [b for b in bits if b]
+        if not bits:
+            continue
+        if all(b in haystack for b in bits):
+            # tie-breaker: in_stock beats sold; newer added_at first
+            rank = (
+                0 if p.get("status") == "in_stock" else 1,
+                # Negative ASCII tuple of added_at sorts newer first.
+                tuple(-ord(c) for c in (p.get("added_at") or "")),
+            )
+            candidates.append((rank, p))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda x: x[0])
+    return candidates[0][1]
+
+
 def context_for_llm(*, max_items: int = 30) -> str:
     """Compact human-readable inventory context for LLM prompts.
 

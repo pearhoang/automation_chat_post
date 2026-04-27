@@ -55,6 +55,16 @@ class Settings(BaseSettings):
     # public webhook so random POSTs cannot trigger commands.
     telegram_webhook_secret: str = ""
 
+    # Optional: route admin notifications into a supergroup with topics
+    # instead of the 1-1 chat. When set, `telegram_admin_group_id` wins
+    # over `telegram_admin_chat_id` for outbound notify_admin() calls.
+    # The per-topic thread IDs (numeric, see Telegram getForumTopic) tell
+    # the bot which forum thread to post into for each notification kind.
+    telegram_admin_group_id: str = ""
+    telegram_admin_topic_customer: str = ""    # khách hỏi / chốt đơn / SĐT
+    telegram_admin_topic_inventory: str = ""   # kho hàng (tham khảo)
+    telegram_admin_topic_post: str = ""        # đăng bài (tham khảo)
+
     # Legacy review-bot fields (kept for backwards compat with older .env
     # files; the admin bot above replaces them).
     telegram_review_bot_token: str = ""

@@ -24,15 +24,18 @@ from .conversation import (
     load_history,
     load_post_context,
     set_post_context,
+    should_skip_burst,
 )
 from .fb_client import fb
 from .inventory import (
     context_for_llm as inventory_context,
     find_by_code,
+    match_post_to_product,
     product_photos,
 )
-from .llm import classify_comment, draft_reply
-from .telegram import handle_update as tg_handle_update, tg
+from .llm import classify_comment, detect_intent, detect_phone, draft_reply
+from .shop_info import shop_info_block
+from .telegram import handle_update as tg_handle_update, notify_admin, tg
 
 # LLM may emit "[SEND_PHOTOS:CODE]<text>" to ask the webhook to attach
 # photos for that product before sending the text. The token is consumed
@@ -139,10 +142,17 @@ async def _handle_messenger_event(evt: dict) -> None:
         log.info("auto_reply disabled — would draft reply only")
         return
 
+    # D6: if the customer is firing several messages within a short
+    # window, skip the older ones and only respond to the latest.
+    if should_skip_burst(sender):
+        log.info("MSG burst-skip from=%s text=%s", sender, text[:80])
+        return
+
     history = load_history(sender)
 
     ctx_parts: list[str] = []
     post_ctx = load_post_context(sender)
+    matched_product: dict | None = None
     if post_ctx:
         block = ["Bài post liên quan (DM này nối tiếp comment khách ở post):"]
         if post_ctx.get("permalink_url"):
@@ -151,8 +161,26 @@ async def _handle_messenger_event(evt: dict) -> None:
             block.append(f"  nội dung: {post_ctx['post_message']}")
         if post_ctx.get("comment_text"):
             block.append(f"  comment gốc của khách: {post_ctx['comment_text']}")
+
+        # C2/D3: resolve the post body to an actual catalog product so
+        # the LLM can answer "còn không?" with REAL status (in_stock vs
+        # sold) instead of trusting the post text — the post body lags
+        # behind the inventory.
+        matched_product = match_post_to_product(post_ctx.get("post_message", ""))
+        if matched_product:
+            block.append(
+                "  product_code: " + str(matched_product.get("code", "?"))
+            )
+            block.append(
+                "  STATUS: " + str(matched_product.get("status", "?"))
+            )
+            price = matched_product.get("price_vnd")
+            if price:
+                block.append(f"  giá hiện tại kho: {price/1_000_000:.1f}tr")
         ctx_parts.append("\n".join(block))
+
     ctx_parts.append(inventory_context())
+    ctx_parts.append(shop_info_block())
 
     reply = await draft_reply(
         text,
@@ -179,14 +207,114 @@ async def _handle_messenger_event(evt: dict) -> None:
         body_b = (pr_match.group(2) or "").strip()
         reply = (body_a if len(body_a) >= len(body_b) else body_b) or reply
 
+    reply = _scrub_tone(reply)
+
     photo_code, text_reply = _extract_photo_directive(reply)
+    photos_sent = False
     if photo_code:
-        await _send_product_photos(sender, photo_code)
+        # D5: validate the code against the live catalog BEFORE doing any
+        # network calls; if the LLM hallucinated, drop the token silently
+        # so the customer never sees a bogus mention of "sending photos".
+        if find_by_code(photo_code):
+            await _send_product_photos(sender, photo_code)
+            photos_sent = True
+        else:
+            log.warning(
+                "send_photos: rejected hallucinated code=%s for sender=%s",
+                photo_code, sender,
+            )
+            # No photo to send; if there was no fallback text either,
+            # send a brief apology so the conversation doesn't stall.
+            if not text_reply:
+                text_reply = "ể mình check lại ảnh em đó đã nhé bạn"
+
     if text_reply:
         await fb.send_message(sender, text_reply)
     # remember the *clean* reply (without the [SEND_PHOTOS] token) so the
     # next turn the LLM can refer back to it by code.
     append_turn(sender, text, text_reply or reply)
+
+    # B10/B11: detect order intent (chốt/cọc) or phone number, and
+    # forward to the admin Telegram so the human can take over.
+    intent = detect_intent(text)
+    phone = detect_phone(text)
+    if intent in ("checkout", "phone_number", "complaint") or phone:
+        try:
+            await _notify_admin_intent(
+                sender=sender,
+                customer_text=text,
+                bot_reply=text_reply or reply,
+                intent=intent,
+                phone=phone,
+                matched_product=matched_product,
+                photos_sent=photos_sent,
+            )
+        except Exception:  # noqa: BLE001
+            log.exception("notify_admin_intent failed sender=%s", sender)
+
+
+async def _notify_admin_intent(
+    *,
+    sender: str,
+    customer_text: str,
+    bot_reply: str,
+    intent: str,
+    phone: str | None,
+    matched_product: dict | None,
+    photos_sent: bool,
+) -> None:
+    label_map = {
+        "checkout": "🔔 KHÁCH CHỐT ĐƠN",
+        "phone_number": "📞 KHÁCH ĐỂ LẠI SĐT",
+        "complaint": "⚠️ KHIẾU NẠI SAU MUA",
+        "general": "ℹ️ KHÁCH NHẮN TIN",
+    }
+    headline = label_map.get(intent, label_map["general"])
+    parts = [
+        headline,
+        f"sender PSID: {sender}",
+    ]
+    if phone:
+        parts.append(f"SĐT: {phone}")
+    if matched_product:
+        parts.append(
+            "Máy: " + " · ".join(
+                str(matched_product.get(k, "")).strip()
+                for k in ("code", "model", "storage", "color")
+                if matched_product.get(k)
+            )
+        )
+    parts.append("")
+    parts.append(f"khách: {customer_text[:600]}")
+    parts.append(f"shop trả lời: {bot_reply[:600]}")
+    if photos_sent:
+        parts.append("(đã gửi ảnh máy cho khách)")
+    await notify_admin("\n".join(parts), topic="customer")
+
+
+_TRAILING_DOT_RE = re.compile(r"([\w\u00C0-\u1EF9])\.(?=\s*\Z|\s*\n)")
+
+
+def _scrub_tone(text: str) -> str:
+    """Apply post-processing tone fixes the LLM keeps drifting away from.
+
+    1. Strip the trailing period at end of message / before newlines —
+       the user explicitly asked for chat-style "no period at end".
+    2. Strip stray repeated trailing punctuation while we're at it
+       (".." → end without dot).
+    """
+    if not text:
+        return text
+    # Remove trailing period right before \n or end of string. We do
+    # this iteratively because some replies have multiple short
+    # sentences each ending in ".".
+    cleaned = text
+    while True:
+        new = _TRAILING_DOT_RE.sub(r"\1", cleaned)
+        if new == cleaned:
+            break
+        cleaned = new
+    return cleaned.rstrip()
 
 
 def _extract_photo_directive(reply: str) -> tuple[str | None, str]:
@@ -237,8 +365,6 @@ async def _forward_comment_to_admin(
     hidden: bool,
 ) -> None:
     """Push a moderation alert to the Telegram admin (best-effort)."""
-    if not settings.telegram_bot_token or not settings.telegram_admin_chat_id:
-        return
     flag = "🚫 ĐÃ ẨN" if hidden else "⚠️ CẦN XEM"
     parts = [
         f"{flag} comment ({label}, {int(confidence * 100)}%)",
@@ -251,10 +377,7 @@ async def _forward_comment_to_admin(
         parts.append(f"lý do: {reason}")
     parts.append("")
     parts.append(text[:600])
-    try:
-        await tg.send_message(settings.telegram_admin_chat_id, "\n".join(parts))
-    except Exception:  # noqa: BLE001
-        log.exception("forward to admin failed")
+    await notify_admin("\n".join(parts), topic="customer")
 
 
 async def _handle_page_change(change: dict) -> None:
@@ -352,6 +475,7 @@ async def _handle_page_change(change: dict) -> None:
     if post_block:
         ctx_parts.append(post_block)
     ctx_parts.append(inventory_context())
+    ctx_parts.append(shop_info_block())
 
     reply = await draft_reply(text, context="\n\n".join(ctx_parts))
     if not reply:
@@ -361,6 +485,10 @@ async def _handle_page_change(change: dict) -> None:
         return
 
     private_msg, public_msg = _extract_private_reply(reply)
+    if private_msg:
+        private_msg = _scrub_tone(private_msg)
+    if public_msg:
+        public_msg = _scrub_tone(public_msg)
     if private_msg:
         try:
             resp = await fb.private_reply_to_comment(comment_id, private_msg)

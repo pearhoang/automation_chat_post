@@ -1,17 +1,19 @@
 """Per-sender short-term conversation memory for Messenger.
 
 Stored as JSON files at ``/opt/fb-webhook/conversations/{sender}.json``
-with the last N user/assistant turns plus an optional ``post_context``
-block (set when the conversation was started from a Page-comment private
+with the last N user/assistant turns plus an optional ``post_contexts``
+list (set when the conversation was started from a Page-comment private
 reply) so the LLM has the context it needs to answer follow-ups like
 "cho xem ảnh máy đó đi" — even across the boundary between a comment on
 a Page post and the resulting Messenger DM thread.
 
 Keep things small: we cap to ``MAX_TURNS`` user+assistant pairs (so
-``2 * MAX_TURNS`` messages) and prune anything older. ``post_context``
+``2 * MAX_TURNS`` messages) and prune anything older. ``post_contexts``
 is preserved across truncation because it carries the original product
 the customer was asking about (otherwise the LLM forgets which post the
-DM thread came from).
+DM thread came from). We keep up to ``MAX_POST_CONTEXTS`` of them so a
+customer who comments on multiple posts doesn't overwrite the older
+contexts entirely.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ import json
 import logging
 import re
 import threading
+import time
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -27,8 +30,14 @@ log = logging.getLogger(__name__)
 STORE_DIR = Path("/opt/fb-webhook/conversations")
 MAX_TURNS = 12          # 12 user + 12 assistant = 24 messages max
 MAX_TEXT_LEN = 800      # truncate long inputs (rare on Messenger)
+MAX_POST_CONTEXTS = 3   # remember the 3 most-recent post-comment threads
+BURST_WINDOW_SEC = 3.0  # debounce: drop a message if another arrived
+                        # from the same sender in the last N seconds
 
 _lock = threading.Lock()
+# In-memory burst tracker. Keyed by sender PSID. Cheap and avoids disk
+# IO on the hot path; lost on restart, which is fine.
+_last_seen: dict[str, float] = {}
 
 
 def _safe_id(sender: str) -> str:
@@ -73,16 +82,46 @@ def load_history(sender: str) -> list[dict]:
 
 
 def load_post_context(sender: str) -> dict | None:
-    """Return the post-context dict (or None) for this sender.
+    """Return the most-recent post-context dict (or None) for this sender.
 
     The dict has keys ``post_id``, ``post_message``, ``permalink_url``,
     ``comment_text`` (the original comment that triggered the DM).
     """
+    contexts = load_post_contexts(sender)
+    return contexts[-1] if contexts else None
+
+
+def load_post_contexts(sender: str) -> list[dict]:
+    """Return all stored post contexts for ``sender`` (oldest first).
+
+    Backwards compatible with the older single-dict ``post_context``
+    schema: if found, it's wrapped into a single-element list.
+    """
     data = _read_raw(sender)
-    pc = data.get("post_context")
-    if isinstance(pc, dict) and (pc.get("post_message") or pc.get("post_id")):
-        return pc
-    return None
+    out: list[dict] = []
+    plural = data.get("post_contexts")
+    if isinstance(plural, list):
+        for pc in plural:
+            if isinstance(pc, dict) and (pc.get("post_message") or pc.get("post_id")):
+                out.append(pc)
+    legacy = data.get("post_context")
+    if isinstance(legacy, dict) and (legacy.get("post_message") or legacy.get("post_id")):
+        out.append(legacy)
+    return out
+
+
+def should_skip_burst(sender: str) -> bool:
+    """Debounce: return True if the sender wrote in the last few seconds.
+
+    We update the timestamp here, so two calls in quick succession yield
+    (False, True). The first message is processed normally; immediate
+    follow-ups are dropped. Once the customer goes quiet for the burst
+    window, the next message gets through again.
+    """
+    now = time.time()
+    last = _last_seen.get(sender, 0.0)
+    _last_seen[sender] = now
+    return (now - last) < BURST_WINDOW_SEC
 
 
 def append_turn(sender: str, user_text: str, assistant_text: str) -> None:
@@ -123,20 +162,39 @@ def set_post_context(
     """
     with _lock:
         data = _read_raw(sender)
-        pc = data.get("post_context") or {}
-        pc.update(
-            {
-                k: v
-                for k, v in {
-                    "post_id": post_id,
-                    "post_message": (post_message or "")[:1500],
-                    "permalink_url": permalink_url,
-                    "comment_text": (comment_text or "")[:MAX_TEXT_LEN],
-                }.items()
-                if v is not None
-            }
-        )
-        data["post_context"] = pc
+        # Migrate any legacy single-dict ``post_context`` into the list.
+        contexts = list(data.get("post_contexts") or [])
+        legacy = data.pop("post_context", None)
+        if isinstance(legacy, dict) and not contexts:
+            contexts.append(legacy)
+
+        new_pc = {
+            k: v
+            for k, v in {
+                "post_id": post_id,
+                "post_message": (post_message or "")[:1500],
+                "permalink_url": permalink_url,
+                "comment_text": (comment_text or "")[:MAX_TEXT_LEN],
+            }.items()
+            if v is not None
+        }
+
+        # If the same post is already in the list, refresh it in place
+        # rather than duplicating; otherwise append.
+        replaced = False
+        for i, existing in enumerate(contexts):
+            if isinstance(existing, dict) and existing.get("post_id") and \
+                    existing.get("post_id") == post_id:
+                contexts[i] = {**existing, **new_pc}
+                replaced = True
+                break
+        if not replaced:
+            contexts.append(new_pc)
+
+        # Cap to the most recent N
+        if len(contexts) > MAX_POST_CONTEXTS:
+            contexts = contexts[-MAX_POST_CONTEXTS:]
+        data["post_contexts"] = contexts
 
         # Seed the synthetic first turn so LLM history includes the DM
         # we already sent. We frame the "user" side as the original
