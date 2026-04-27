@@ -34,6 +34,33 @@ class FacebookClient:
         r.raise_for_status()
         return r.json()
 
+    async def send_image(self, recipient_id: str, image_bytes: bytes,
+                         filename: str = "image.jpg") -> dict:
+        """Send an image attachment via Messenger Send API (multipart)."""
+        import json as _json
+        url = f"{self.base}/me/messages"
+        params = {"access_token": self.page_token}
+        data = {
+            "recipient": _json.dumps({"id": recipient_id}),
+            "message": _json.dumps({
+                "attachment": {
+                    "type": "image",
+                    "payload": {"is_reusable": False},
+                }
+            }),
+            "messaging_type": "RESPONSE",
+        }
+        files = {
+            "filedata": (filename, image_bytes, "image/jpeg"),
+        }
+        r = await self._http.post(
+            url, params=params, data=data, files=files, timeout=60.0
+        )
+        if r.status_code >= 400:
+            log.error("send_image failed status=%s body=%s", r.status_code, r.text)
+        r.raise_for_status()
+        return r.json()
+
     async def reply_comment(self, comment_id: str, text: str) -> dict:
         """Public reply on a Page post comment."""
         url = f"{self.base}/{comment_id}/comments"

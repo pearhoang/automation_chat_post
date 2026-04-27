@@ -13,15 +13,26 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response
 
 from .config import settings
+from .conversation import append_turn, load_history
 from .fb_client import fb
-from .inventory import context_for_llm as inventory_context
+from .inventory import (
+    context_for_llm as inventory_context,
+    find_by_code,
+    product_photos,
+)
 from .llm import classify_comment, draft_reply
 from .telegram import handle_update as tg_handle_update, tg
+
+# LLM may emit "[SEND_PHOTOS:CODE]<text>" to ask the webhook to attach
+# photos for that product before sending the text. The token is consumed
+# by the webhook and never forwarded to the customer.
+_SEND_PHOTOS_RE = re.compile(r"^\s*\[SEND_PHOTOS:\s*([A-Z0-9_-]+)\s*\]\s*", re.I)
 
 logging.basicConfig(
     level=settings.log_level,
@@ -115,7 +126,12 @@ async def _handle_messenger_event(evt: dict) -> None:
         log.info("auto_reply disabled — would draft reply only")
         return
 
-    reply = await draft_reply(text, context=inventory_context())
+    history = load_history(sender)
+    reply = await draft_reply(
+        text,
+        context=inventory_context(),
+        history=history,
+    )
     if not reply:
         return
 
@@ -124,7 +140,45 @@ async def _handle_messenger_event(evt: dict) -> None:
         log.info("REVIEW draft for %s :: %s", sender, reply)
         return
 
-    await fb.send_message(sender, reply)
+    photo_code, text_reply = _extract_photo_directive(reply)
+    if photo_code:
+        await _send_product_photos(sender, photo_code)
+    if text_reply:
+        await fb.send_message(sender, text_reply)
+    # remember the *clean* reply (without the [SEND_PHOTOS] token) so the
+    # next turn the LLM can refer back to it by code.
+    append_turn(sender, text, text_reply or reply)
+
+
+def _extract_photo_directive(reply: str) -> tuple[str | None, str]:
+    """Parse a leading ``[SEND_PHOTOS:CODE]`` token. Returns (code, rest)."""
+    m = _SEND_PHOTOS_RE.match(reply)
+    if not m:
+        return None, reply
+    return m.group(1).upper(), _SEND_PHOTOS_RE.sub("", reply, count=1).strip()
+
+
+async def _send_product_photos(sender: str, code: str) -> None:
+    """Look up product by code and send up to 3 photos via Send API."""
+    product = find_by_code(code)
+    if not product:
+        log.warning("send_photos: unknown product code=%s", code)
+        return
+    photos = product_photos(code, max_photos=3)
+    if not photos:
+        log.warning("send_photos: no photo files for code=%s", code)
+        return
+    log.info("send_photos: code=%s n=%d", code, len(photos))
+    for path in photos:
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            log.warning("send_photos: cannot read %s: %s", path, exc)
+            continue
+        try:
+            await fb.send_image(sender, data, filename=path.name)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("send_photos: failed for %s: %s", path.name, exc)
 
 
 def _split_labels(raw: str) -> set[str]:

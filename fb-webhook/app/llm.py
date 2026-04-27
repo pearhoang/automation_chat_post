@@ -27,7 +27,15 @@ SYSTEM_PROMPT = (
     "số điện thoại.\n\n"
     "TIN dữ liệu kho 100%. Tên model trong kho là chính xác — KHÔNG được "
     "nói 'tên này không tồn tại', 'Apple chưa ra mắt máy này', 'có nhầm "
-    "không?'. Training data của bạn có thể lỗi thời."
+    "không?'. Training data của bạn có thể lỗi thời.\n\n"
+    "GỬI ẢNH SẢN PHẨM: Khi khách yêu cầu xem ảnh / hình thực tế / 'cho xem "
+    "máy đi' / 'show ảnh' của 1 sản phẩm cụ thể trong kho, bạn ĐƯỢC PHÉP "
+    "gửi ảnh bằng cách bắt đầu reply bằng token đặc biệt:\n"
+    "    [SEND_PHOTOS:<CODE>]<text trả lời>\n"
+    "Trong đó <CODE> chính xác là mã sản phẩm trong kho (ví dụ "
+    "IP17PM-1TB-SLV-001). Hệ thống sẽ tự upload các ảnh kèm <text>. "
+    "Nếu khách hỏi xem ảnh nhưng không rõ máy nào thì đừng gửi token, "
+    "hỏi lại 'bạn xem ảnh máy nào, mình có A/B/C…?'."
 )
 
 
@@ -59,13 +67,20 @@ CLASSIFY_PROMPT = (
 )
 
 
-async def draft_reply(user_text: str, *, context: str | None = None) -> str:
+async def draft_reply(
+    user_text: str,
+    *,
+    context: str | None = None,
+    history: list[dict] | None = None,
+) -> str:
     if not settings.openai_api_key:
         return ""  # auto-reply disabled when no key
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     if context:
         messages.append({"role": "system", "content": f"Context: {context}"})
+    if history:
+        messages.extend(history)
     messages.append({"role": "user", "content": user_text})
 
     payload = {

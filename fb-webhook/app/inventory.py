@@ -53,6 +53,36 @@ def in_stock_products() -> list[dict]:
     ]
 
 
+def find_by_code(code: str) -> dict | None:
+    code = (code or "").strip().upper()
+    if not code:
+        return None
+    for p in load_catalog().get("products", []):
+        if p.get("code", "").upper() == code:
+            return p
+    return None
+
+
+def product_photos(code: str, *, max_photos: int = 5) -> list[Path]:
+    """Return ordered list of photo paths for a product code, in_stock or sold."""
+    code = (code or "").strip().upper()
+    if not code:
+        return []
+    workspace = os.environ.get("OPENCLAW_WORKSPACE") or str(
+        Path.home() / ".openclaw" / "workspace"
+    )
+    inv = Path(workspace) / "inventory"
+    for sub in ("products", "sold"):
+        folder = inv / sub / code
+        if folder.is_dir():
+            photos = sorted(
+                p for p in folder.iterdir()
+                if p.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")
+            )
+            return photos[:max_photos]
+    return []
+
+
 def context_for_llm(*, max_items: int = 30) -> str:
     """Compact human-readable inventory context for LLM prompts.
 
