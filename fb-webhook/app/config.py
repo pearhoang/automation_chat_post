@@ -33,6 +33,18 @@ class Settings(BaseSettings):
     auto_reply_enabled: bool = False
     human_review_queue: bool = True
 
+    # Comment moderation. Each setting is a comma-separated list of labels
+    # produced by `llm.classify_comment` (positive | neutral | question |
+    # negative | spam_toxic). Defaults are conservative: only spam/toxic
+    # gets auto-hidden, both negative and spam_toxic get forwarded to the
+    # admin Telegram, and only spam_toxic gets skipped on auto-reply.
+    comment_auto_hide_labels: str = "spam_toxic"
+    comment_forward_labels: str = "negative,spam_toxic"
+    comment_skip_reply_labels: str = "spam_toxic"
+    # Minimum classifier confidence required before acting on
+    # auto-hide/skip. Below this, the comment is treated as "neutral".
+    comment_action_min_confidence: float = 0.6
+
     # Telegram admin bot — used for posting/managing the Page from chat.
     # If `telegram_admin_chat_id` is empty the bot will only respond to
     # /start and /whoami (so the owner can discover their own chat_id).

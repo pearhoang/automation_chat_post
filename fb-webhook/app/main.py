@@ -19,7 +19,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 
 from .config import settings
 from .fb_client import fb
-from .llm import draft_reply
+from .llm import classify_comment, draft_reply
 from .telegram import handle_update as tg_handle_update, tg
 
 logging.basicConfig(
@@ -126,6 +126,43 @@ async def _handle_messenger_event(evt: dict) -> None:
     await fb.send_message(sender, reply)
 
 
+def _split_labels(raw: str) -> set[str]:
+    """Parse a comma-separated label list from .env into a normalized set."""
+    return {x.strip().lower() for x in (raw or "").split(",") if x.strip()}
+
+
+async def _forward_comment_to_admin(
+    *,
+    label: str,
+    confidence: float,
+    reason: str,
+    text: str,
+    comment_id: str,
+    post_id: str | None,
+    from_name: str | None,
+    hidden: bool,
+) -> None:
+    """Push a moderation alert to the Telegram admin (best-effort)."""
+    if not settings.telegram_bot_token or not settings.telegram_admin_chat_id:
+        return
+    flag = "🚫 ĐÃ ẨN" if hidden else "⚠️ CẦN XEM"
+    parts = [
+        f"{flag} comment ({label}, {int(confidence * 100)}%)",
+        f"từ: {from_name or '?'}",
+    ]
+    if post_id:
+        parts.append(f"post: https://www.facebook.com/{post_id}")
+    parts.append(f"id: {comment_id}")
+    if reason:
+        parts.append(f"lý do: {reason}")
+    parts.append("")
+    parts.append(text[:600])
+    try:
+        await tg.send_message(settings.telegram_admin_chat_id, "\n".join(parts))
+    except Exception:  # noqa: BLE001
+        log.exception("forward to admin failed")
+
+
 async def _handle_page_change(change: dict) -> None:
     field = change.get("field")
     value = change.get("value", {})
@@ -137,7 +174,10 @@ async def _handle_page_change(change: dict) -> None:
         return
     comment_id = value.get("comment_id")
     text = value.get("message")
-    from_id = value.get("from", {}).get("id")
+    from_obj = value.get("from", {}) or {}
+    from_id = from_obj.get("id")
+    from_name = from_obj.get("name")
+    post_id = value.get("post_id")
     if from_id == settings.fb_page_id:
         return  # ignore our own comments
     if not (comment_id and text):
@@ -145,9 +185,61 @@ async def _handle_page_change(change: dict) -> None:
 
     log.info("COMMENT id=%s text=%s", comment_id, text[:80])
 
+    classification = await classify_comment(text)
+    label = classification["label"]
+    confidence = classification["confidence"]
+    reason = classification["reason"]
+    log.info(
+        "COMMENT classified id=%s label=%s confidence=%.2f reason=%s",
+        comment_id,
+        label,
+        confidence,
+        reason[:80],
+    )
+
+    hide_labels = _split_labels(settings.comment_auto_hide_labels)
+    forward_labels = _split_labels(settings.comment_forward_labels)
+    skip_reply_labels = _split_labels(settings.comment_skip_reply_labels)
+    min_conf = settings.comment_action_min_confidence
+
+    # Auto-hide flagged comments first so they disappear from public view
+    # before we even draft a reply. We only hide when the classifier is
+    # confident — low-confidence calls fall through to normal handling.
+    hidden = False
+    if label in hide_labels and confidence >= min_conf:
+        try:
+            await fb.hide_comment(comment_id)
+            hidden = True
+            log.info("COMMENT hidden id=%s label=%s", comment_id, label)
+        except Exception:  # noqa: BLE001
+            log.exception("hide_comment failed id=%s", comment_id)
+
+    # Forward sensitive labels to the admin so a human can step in.
+    if label in forward_labels:
+        await _forward_comment_to_admin(
+            label=label,
+            confidence=confidence,
+            reason=reason,
+            text=text,
+            comment_id=comment_id,
+            post_id=post_id,
+            from_name=from_name,
+            hidden=hidden,
+        )
+
     if not settings.auto_reply_enabled:
         return
-    reply = await draft_reply(text, context="The user is commenting on a Page post.")
+    if label in skip_reply_labels and confidence >= min_conf:
+        log.info("COMMENT skip_reply id=%s label=%s", comment_id, label)
+        return
+
+    reply = await draft_reply(
+        text,
+        context=(
+            "The user is commenting on a Page post. "
+            f"Internal classifier label={label} confidence={confidence:.2f}."
+        ),
+    )
     if not reply:
         return
     if settings.human_review_queue:
