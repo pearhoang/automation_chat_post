@@ -12,13 +12,31 @@
 **Page Hoàng đã cấu hình SẴN, không phải hỏi:**
 - Tên page: **Apple Shop Siêu Lướt**
 - File credentials: `~/.openclaw/workspace/skills/facebook-page/.env` (có `app_id`, `app_secret`, `page_id`, `page_access_token`, `page_name`).
-- Khi user nói "đăng bài lên page" → mặc định = page Apple Shop Siêu Lướt (Hoàng chỉ có 1 page). KHÔNG hỏi "đăng lên page nào / cho mình Page ID / Access Token" — tất cả đã có trong `.env`. Đọc trực tiếp:
-  ```bash
-  set -a && source ~/.openclaw/workspace/skills/facebook-page/.env && set +a
-  curl -s -F "message=$MSG" -F "access_token=$page_access_token" \
-    "https://graph.facebook.com/v21.0/${page_id}/feed"
-  ```
+- Khi user nói "đăng bài lên page" → mặc định = page Apple Shop Siêu Lướt (Hoàng chỉ có 1 page). KHÔNG hỏi "đăng lên page nào / cho mình Page ID / Access Token" — tất cả đã có trong `.env`.
 - KHÔNG bao giờ in / log / echo `page_access_token` ra cho user thấy. Khi cần debug chỉ hiển thị 4 ký tự cuối.
+
+**FLOW BẮT BUỘC khi đăng bài lên Page (KHÔNG ĐƯỢC SKIP):**
+
+1. Khi user gửi ảnh + caption hoặc nói "đăng bài lên page" → **draft trước**, KHÔNG đăng ngay. Reply theo format:
+   ```
+   Mình draft thử nha, OK chưa rồi mình đăng:
+
+   ----
+   <nội dung bài draft tự nhiên, đời thường, có chút câu chuyện — không liệt kê khô khan>
+   ----
+
+   Đăng nha?
+   ```
+2. CHỜ user reply "ok" / "đăng đi" / "yes" / "đăng nha" / "chốt" → khi đó mới gọi `publish_post.py` để đăng.
+3. Nếu user nói "sửa lại", "viết khác đi", "đời thường hơn", "thêm chi tiết X" → draft lại, KHÔNG được đăng phiên bản cũ.
+4. Caption user nhập vào khi gửi ảnh KHÔNG phải là confirmation — đó chỉ là input. Phải LUÔN draft + ask trước.
+
+**Edit bài đã đăng:** dùng `edit_post.py --post-id <full_post_id> --message "<nội dung mới>"` (chạy `POST /{post_id}` với field `message`). Facebook CHO PHÉP edit text của bài đã đăng, chỉ KHÔNG cho thay ảnh. Nếu user muốn thay ảnh → tạo bài mới (sau khi xác nhận xoá bài cũ với phrase "đồng ý xoá bài <full_post_id>").
+
+**Scripts có sẵn trong `~/.openclaw/workspace/skills/facebook-page/scripts/`:**
+- `publish_post.py --photos <paths> --message "<msg>"` → đăng bài text+ảnh sau khi user OK draft.
+- `edit_post.py --post-id <id> --message "<msg mới>"` → sửa text bài đã đăng.
+- `delete_post.py --post-id <id>` → xoá bài (CHỈ chạy sau confirmation phrase đầy đủ "đồng ý xoá bài <full_id>").
 
 ### `skills/inventory/SKILL.md`
 
@@ -96,8 +114,9 @@ Backend là DeepSeek-Chat — không hỗ trợ vision. **KHÔNG gọi tool `ima
 - KHÔNG batch destructive actions ("xoá cả 3 bài"). Mỗi destructive action cần confirm riêng từng item.
 
 ### Posting / messaging
-- Đăng bài (publish_post, comment, send_message) yêu cầu xác nhận đầy đủ FULL nội dung sẽ đăng trước khi gửi.
-- Không tự ý chỉnh sửa post đã đăng.
+- Đăng bài (publish_post, comment, send_message) **TUYỆT ĐỐI phải draft trước + chờ user OK riêng một câu mới đăng**. Caption gửi kèm ảnh KHÔNG TÍNH là confirm. Mỗi lần đăng = 2 step: (1) draft + ask, (2) chờ user gõ "ok / đăng đi / chốt" → mới chạy publish.
+- Edit post text qua `edit_post.py` LÀ HỢP LỆ (Facebook cho phép edit message của bài đã đăng). KHÔNG được nói "không sửa được qua API" — sai. Khi user muốn sửa nội dung → gọi `edit_post.py` thay vì đăng bài mới.
+- KHÔNG được delete post mà không có confirmation phrase đầy đủ. Edit text thì OK, không cần confirm phrase đặc biệt (text edit reversible bằng edit lại lần nữa).
 
 ### Inventory destructive ops
 - Khi bán: dùng `mark_sold.py --code <CODE>` (reversible — chỉ chuyển folder vào sold/), KHÔNG `rm -rf`.
@@ -109,5 +128,6 @@ Backend là DeepSeek-Chat — không hỗ trợ vision. **KHÔNG gọi tool `ima
 
 ## When in doubt
 - ASK. Mặc định là read-only operations. Đừng đoán intent destructive.
-- Trước khi đăng bài / hide comment / mark sold, luôn confirm.
+- **Đăng bài lên Page = LUÔN LUÔN draft trước + chờ user OK. Không bao giờ auto-publish, kể cả khi caption rất rõ ràng.**
 - Khi nhận ảnh + caption mô tả sản phẩm → default = add_product (không cần confirm vì reversible: nếu sai có thể `mark_sold` để archive).
+- Khi user vừa thêm sản phẩm vào kho + có ý định đăng → step 1 chạy `add_product.py` (auto), step 2 draft caption Page + ask user OK trước khi gọi `publish_post.py`.
