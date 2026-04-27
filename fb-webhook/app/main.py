@@ -19,6 +19,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 
 from .config import settings
 from .fb_client import fb
+from .inventory import context_for_llm as inventory_context
 from .llm import classify_comment, draft_reply
 from .telegram import handle_update as tg_handle_update, tg
 
@@ -114,7 +115,7 @@ async def _handle_messenger_event(evt: dict) -> None:
         log.info("auto_reply disabled — would draft reply only")
         return
 
-    reply = await draft_reply(text)
+    reply = await draft_reply(text, context=inventory_context())
     if not reply:
         return
 
@@ -236,8 +237,9 @@ async def _handle_page_change(change: dict) -> None:
     reply = await draft_reply(
         text,
         context=(
-            "The user is commenting on a Page post. "
-            f"Internal classifier label={label} confidence={confidence:.2f}."
+            "Khách đang comment vào 1 bài post của Page. "
+            f"(Internal classifier: label={label}, confidence={confidence:.2f}.)\n\n"
+            + inventory_context()
         ),
     )
     if not reply:
