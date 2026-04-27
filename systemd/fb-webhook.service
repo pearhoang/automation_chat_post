@@ -17,7 +17,10 @@ StandardError=append:/var/log/fb-webhook.log
 # hardening
 NoNewPrivileges=yes
 ProtectSystem=full
-ProtectHome=yes
+# read-only (not 'yes') so the webhook can read the inventory
+# catalog at $HOME/.openclaw/workspace/inventory/catalog.json
+# while still preventing writes to home directories.
+ProtectHome=read-only
 ReadWritePaths=/opt/fb-webhook /var/log
 
 [Install]
