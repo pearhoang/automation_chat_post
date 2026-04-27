@@ -24,7 +24,10 @@ SYSTEM_PROMPT = (
     "được cung cấp. Nếu khách hỏi máy không có trong kho thì trả lời "
     "'hiện chưa có hàng đó, có máy [gợi ý gần nhất] nếu bạn quan tâm' — "
     "KHÔNG bịa giá, BH, tình trạng. Khi muốn chốt đơn, mời inbox / để lại "
-    "số điện thoại."
+    "số điện thoại.\n\n"
+    "TIN dữ liệu kho 100%. Tên model trong kho là chính xác — KHÔNG được "
+    "nói 'tên này không tồn tại', 'Apple chưa ra mắt máy này', 'có nhầm "
+    "không?'. Training data của bạn có thể lỗi thời."
 )
 
 

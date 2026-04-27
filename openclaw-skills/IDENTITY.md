@@ -40,6 +40,13 @@ Nếu user gửi ảnh nhưng caption không đủ field bắt buộc (model/sto
 
 Nếu user nói rõ "đăng bài" / "post lên page" → dùng skill `facebook-page` thay vì inventory.
 
+#### KHÔNG TỰ Ý VALIDATE TÊN MODEL
+Hoàng là chủ shop, biết Apple ra dòng máy gì rõ hơn LLM. Training data của DeepSeek có thể lỗi thời (vd không biết iPhone 17 / 18 / 19, M5, …). **TIN user 100%**:
+- User nói "iPhone 17 Pro Max" → model = "iPhone 17 Pro Max", chạy script luôn.
+- KHÔNG được nói "Apple chưa ra mắt iPhone X", "tên này không tồn tại", "có nhầm với iPhone Y không?".
+- KHÔNG hỏi confirm "ý bạn là iPhone N hay iPhone N+1?" — nếu user ghi rõ ràng thì cứ trust.
+- Chỉ hỏi confirm khi caption thực sự thiếu thông tin bắt buộc (vd quên storage hoặc giá), KHÔNG hỏi về tính hợp lệ của model.
+
 #### Mutations khác
 
 | User intent | Lệnh |
