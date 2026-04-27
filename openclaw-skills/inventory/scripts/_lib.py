@@ -46,6 +46,14 @@ def inventory_root() -> Path:
 # ---------------------------------------------------------------------------
 _MODEL_ABBR = [
     # order matters: longest match first
+    (re.compile(r"iphone\s*17\s*pro\s*max", re.I), "IP17PM"),
+    (re.compile(r"iphone\s*17\s*pro", re.I), "IP17PRO"),
+    (re.compile(r"iphone\s*17\s*plus", re.I), "IP17PLUS"),
+    (re.compile(r"iphone\s*17", re.I), "IP17"),
+    (re.compile(r"iphone\s*16\s*pro\s*max", re.I), "IP16PM"),
+    (re.compile(r"iphone\s*16\s*pro", re.I), "IP16PRO"),
+    (re.compile(r"iphone\s*16\s*plus", re.I), "IP16PLUS"),
+    (re.compile(r"iphone\s*16", re.I), "IP16"),
     (re.compile(r"iphone\s*15\s*pro\s*max", re.I), "IP15PM"),
     (re.compile(r"iphone\s*15\s*pro", re.I), "IP15PRO"),
     (re.compile(r"iphone\s*15\s*plus", re.I), "IP15PLUS"),
@@ -69,10 +77,6 @@ _MODEL_ABBR = [
     (re.compile(r"iphone\s*xs", re.I), "IPXS"),
     (re.compile(r"iphone\s*xr", re.I), "IPXR"),
     (re.compile(r"iphone\s*x\b", re.I), "IPX"),
-    (re.compile(r"iphone\s*16\s*pro\s*max", re.I), "IP16PM"),
-    (re.compile(r"iphone\s*16\s*pro", re.I), "IP16PRO"),
-    (re.compile(r"iphone\s*16\s*plus", re.I), "IP16PLUS"),
-    (re.compile(r"iphone\s*16", re.I), "IP16"),
     (re.compile(r"ipad\s*pro", re.I), "IPADPRO"),
     (re.compile(r"ipad\s*air", re.I), "IPADAIR"),
     (re.compile(r"ipad\s*mini", re.I), "IPADMINI"),
