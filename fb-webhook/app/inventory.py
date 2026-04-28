@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -146,6 +147,102 @@ def match_post_to_product(post_text: str) -> dict | None:
         return None
     candidates.sort(key=lambda x: x[0])
     return candidates[0][1]
+
+
+def _model_aliases(model: str) -> list[str]:
+    """Common Vietnamese-shorthand names for an iPhone/iPad/Mac model.
+
+    The catalog stores the long form ("iPhone 15 Pro Max"); customers
+    chat in shorthand ("15 PM", "15 prm", "15pm", "ip 15 pm"). We try
+    each alias when matching DM text so a switch like "có 15 PM không?"
+    can still resolve to ``IP15PM-…`` even though the customer never
+    typed the full name. Returned strings are already lowercased and
+    diacritic-stripped (``_normalize`` form).
+    """
+    base = _normalize(model)
+    if not base:
+        return []
+    aliases: set[str] = {base}
+    no_brand = re.sub(
+        r"^(iphone|ipad|macbook|mac|imac|airpods?|watch)\s+",
+        "",
+        base,
+    )
+    if no_brand:
+        aliases.add(no_brand)
+    # Pro Max ↔ PM ↔ PRM (Vietnamese shorthand). Customers also smush
+    # the words ("15pm", "15PRM") so we register no-space variants too.
+    if "pro max" in no_brand:
+        for alt in ("pm", "prm", "promax"):
+            spaced = no_brand.replace("pro max", alt)
+            squished = spaced.replace(" ", "")
+            aliases.add(spaced)
+            aliases.add(squished)
+            # also support "15 pm" with a digit prefix kept as-is
+            aliases.add(no_brand.replace(" pro max", " " + alt))
+            aliases.add(no_brand.replace(" pro max", alt))
+    return sorted({a.strip() for a in aliases if a.strip()})
+
+
+def find_products_in_text(text: str) -> list[dict]:
+    """Return every catalog product the text uniquely resolves to.
+
+    Used by the Messenger handler to figure out which product the
+    *current* DM turn is referring to (vs the post product the DM
+    thread originated from). Matching:
+
+    1. Filter to products whose model alias + storage both appear
+       in ``text`` (model fuzzy via ``_model_aliases``, storage
+       strict via ``_normalize`` substring).
+    2. If multiple candidates remain, narrow by color: keep only
+       the ones whose ``color`` field appears in the text. So a bot
+       reply like "16 Pro Max Vàng Sa Mạc 256GB" picks just the
+       Vàng-Sa-Mạc SKU even though Titan also matches model+storage.
+    3. If still multiple, return them all — the caller treats that
+       as ambiguous and refuses to guess.
+
+    Returns deduplicated by ``code``; in_stock entries first, then
+    sold ones, newest first inside each group. Empty list when
+    nothing matches model+storage.
+    """
+    if not text:
+        return []
+    haystack = _normalize(text)
+    if not haystack:
+        return []
+    candidates: list[tuple[tuple, dict]] = []
+    seen: set[str] = set()
+    for p in all_products():
+        code = (p.get("code") or "").upper()
+        if not code or code in seen:
+            continue
+        storage = _normalize(p.get("storage", ""))
+        if not storage or storage not in haystack:
+            continue
+        if not any(
+            alias in haystack
+            for alias in _model_aliases(p.get("model", ""))
+        ):
+            continue
+        seen.add(code)
+        rank = (
+            0 if p.get("status") == "in_stock" else 1,
+            tuple(-ord(c) for c in (p.get("added_at") or "")),
+        )
+        candidates.append((rank, p))
+    if len(candidates) > 1:
+        # Disambiguate by color when the text actually mentions it.
+        color_hits = [
+            (rank, p) for rank, p in candidates
+            if (
+                _normalize(p.get("color", ""))
+                and _normalize(p.get("color", "")) in haystack
+            )
+        ]
+        if color_hits:
+            candidates = color_hits
+    candidates.sort(key=lambda x: x[0])
+    return [p for _, p in candidates]
 
 
 def context_for_llm(*, max_items: int = 30) -> str:

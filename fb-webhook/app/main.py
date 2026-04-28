@@ -30,6 +30,7 @@ from .fb_client import fb
 from .inventory import (
     context_for_llm as inventory_context,
     find_by_code,
+    find_products_in_text,
     match_post_to_product,
     product_photos,
 )
@@ -93,6 +94,53 @@ def _is_photo_request(text: str) -> bool:
     if not text:
         return False
     return bool(_PHOTO_REQUEST_RE.search(_strip_diacritics(text)))
+
+
+def _current_focus_product(
+    history: list[dict],
+    current_text: str,
+    default: dict | None,
+) -> dict | None:
+    """Resolve which product the conversation is *currently* about.
+
+    The post-context that started the DM thread pins one product, but
+    customers regularly switch ("post bán 17 PM, khách lại hỏi 15 PM
+    nữa") and the "send photos" fallback was sending the *post's*
+    product even after the conversation had moved on. We walk back
+    through the recent turns instead, picking the latest one that
+    references exactly one in_stock catalog item:
+
+      1. The customer's *current* message (lets them say "cho xem ảnh
+         15 PM 256GB" and switch instantly).
+      2. Recent assistant + user history (newest first). Stops as
+         soon as we find a turn that uniquely names one product.
+      3. ``default`` (post-context matched product) — used only if
+         nothing in the conversation is product-specific.
+
+    A turn that names *several* products (vd bot listing the whole
+    stock) is treated as ambiguous and we move further back rather
+    than guess; if no turn is unambiguous we fall through to
+    ``default``. The caller decides whether to attach a photo at all,
+    so worst case is "no photo this turn" rather than the wrong one.
+    """
+    matches = find_products_in_text(current_text)
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        # The customer themselves named multiple products this turn —
+        # don't second-guess; let the LLM ask which one.
+        return None
+    for msg in reversed(history[-12:]):
+        text = msg.get("content") or ""
+        matches = find_products_in_text(text)
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            # Ambiguous turn (vd bot listed several em). Stop and use
+            # the post default rather than walking back further into
+            # potentially stale single-product mentions.
+            return default
+    return default
 
 # Comment replies may emit "[PRIVATE_REPLY]<dm body>\n<public reply>" so we
 # can both DM the commenter (Private Reply) AND post the public response.
@@ -231,6 +279,30 @@ async def _handle_messenger_event(evt: dict) -> None:
                 block.append(f"  giá hiện tại kho: {price/1_000_000:.1f}tr")
         ctx_parts.append("\n".join(block))
 
+    # Track which product the *current* DM is about. Often it's the
+    # post product, but customers regularly switch ("post bán 17 PM,
+    # khách hỏi 15 PM nữa") — surface the latest focus to the LLM so
+    # [SEND_PHOTOS:CODE] picks the right code, AND reuse it as the
+    # heuristic-fallback target if the LLM forgets the token.
+    current_product = _current_focus_product(history, text, matched_product)
+    if current_product and (
+        not matched_product
+        or current_product.get("code") != matched_product.get("code")
+    ):
+        focus_lines = ["Em khách đang hỏi gần nhất trong DM:"]
+        focus_lines.append(
+            "  current_product_code: " + str(current_product.get("code", "?"))
+        )
+        focus_lines.append(
+            "  STATUS: " + str(current_product.get("status", "?"))
+        )
+        price = current_product.get("price_vnd")
+        if price:
+            focus_lines.append(
+                f"  giá hiện tại kho: {price/1_000_000:.1f}tr"
+            )
+        ctx_parts.append("\n".join(focus_lines))
+
     ctx_parts.append(inventory_context())
     ctx_parts.append(shop_info_block())
 
@@ -283,17 +355,22 @@ async def _handle_messenger_event(evt: dict) -> None:
     # Fallback: the LLM keeps drifting away from emitting the
     # [SEND_PHOTOS:CODE] directive on follow-up requests like "cho xem
     # lại ảnh đi" / "gửi ảnh thật cho mình" / "send more pics". When
-    # that happens AND the post-context already pinned a concrete
-    # product (matched_product), attach photos for that product so
-    # the bot's promise of "gửi bạn ảnh em đó nè" doesn't read as
-    # empty. Skip if we already sent photos this turn or there's no
-    # matched product (would require asking which one).
+    # that happens AND we can pin down a single concrete product the
+    # conversation is currently about, attach photos for that product
+    # so the bot's promise of "gửi bạn ảnh em đó nè" doesn't read as
+    # empty. ``_current_focus_product`` walks back through history to
+    # pick the *latest* product the customer/bot was discussing —
+    # important when the DM started on post X but the customer has
+    # since pivoted to product Y; the old fallback would have sent
+    # the post product's photos (the wrong one). When the focus is
+    # ambiguous (no recent mention or several at once), we send
+    # nothing and rely on the LLM to ask "máy nào".
     if (
         not photos_sent
-        and matched_product
+        and current_product
         and _is_photo_request(text)
     ):
-        fallback_code = str(matched_product.get("code", "")).upper()
+        fallback_code = str(current_product.get("code", "")).upper()
         if fallback_code and find_by_code(fallback_code):
             log.info(
                 "send_photos: fallback code=%s sender=%s text=%s",
