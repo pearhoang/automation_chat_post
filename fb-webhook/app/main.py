@@ -31,6 +31,7 @@ from .inventory import (
     context_for_llm as inventory_context,
     find_by_code,
     find_products_in_text,
+    lookup_products,
     match_post_to_product,
     product_photos,
 )
@@ -306,10 +307,23 @@ async def _handle_messenger_event(evt: dict) -> None:
     ctx_parts.append(inventory_context())
     ctx_parts.append(shop_info_block())
 
+    # Track tool side-effects (photo sends) so the heuristic fallback
+    # at the bottom doesn't double-fire after a successful tool call.
+    tool_state = {"photos_sent_codes": set()}
+
+    async def _tool_executor(name: str, args: dict) -> str:
+        return await _execute_llm_tool(
+            name=name,
+            args=args,
+            sender=sender,
+            tool_state=tool_state,
+        )
+
     reply = await draft_reply(
         text,
         context="\n\n".join(ctx_parts),
         history=history,
+        tool_executor=_tool_executor,
     )
     if not reply:
         return
@@ -334,14 +348,23 @@ async def _handle_messenger_event(evt: dict) -> None:
     reply = _scrub_tone(reply)
 
     photo_code, text_reply = _extract_photo_directive(reply)
-    photos_sent = False
+    photos_sent = bool(tool_state["photos_sent_codes"])
     if photo_code:
-        # D5: validate the code against the live catalog BEFORE doing any
-        # network calls; if the LLM hallucinated, drop the token silently
-        # so the customer never sees a bogus mention of "sending photos".
-        if find_by_code(photo_code):
+        # If the model already used the ``send_product_photos`` tool
+        # this turn, ignore the (legacy) [SEND_PHOTOS:CODE] token to
+        # avoid sending the same photos twice. Otherwise validate the
+        # code against the live catalog and send via the Send API —
+        # the token path is kept as a fallback for any provider that
+        # doesn't expose tool-calling.
+        if photo_code in tool_state["photos_sent_codes"]:
+            log.info(
+                "send_photos: token=%s already sent via tool, skipping",
+                photo_code,
+            )
+        elif find_by_code(photo_code):
             await _send_product_photos(sender, photo_code)
             photos_sent = True
+            tool_state["photos_sent_codes"].add(photo_code)
         else:
             log.warning(
                 "send_photos: rejected hallucinated code=%s for sender=%s",
@@ -371,13 +394,18 @@ async def _handle_messenger_event(evt: dict) -> None:
         and _is_photo_request(text)
     ):
         fallback_code = str(current_product.get("code", "")).upper()
-        if fallback_code and find_by_code(fallback_code):
+        if (
+            fallback_code
+            and fallback_code not in tool_state["photos_sent_codes"]
+            and find_by_code(fallback_code)
+        ):
             log.info(
-                "send_photos: fallback code=%s sender=%s text=%s",
+                "send_photos: heuristic fallback code=%s sender=%s text=%s",
                 fallback_code, sender, text[:80],
             )
             await _send_product_photos(sender, fallback_code)
             photos_sent = True
+            tool_state["photos_sent_codes"].add(fallback_code)
 
     if text_reply:
         await fb.send_message(sender, text_reply)
@@ -474,6 +502,77 @@ def _extract_photo_directive(reply: str) -> tuple[str | None, str]:
     if not m:
         return None, reply
     return m.group(1).upper(), _SEND_PHOTOS_RE.sub("", reply, count=1).strip()
+
+
+async def _execute_llm_tool(
+    *,
+    name: str,
+    args: dict,
+    sender: str,
+    tool_state: dict,
+) -> str:
+    """Run a tool requested by the LLM and return a JSON string result.
+
+    Wired into ``llm.draft_reply`` via the ``tool_executor`` callback.
+    Each tool returns a small JSON-serialised dict the model can parse
+    in the next turn. Errors are returned in-band as ``{"error": ...}``
+    rather than raised so a single bad tool call doesn't kill the
+    whole reply — the model usually self-corrects on retry.
+
+    Side effects (photo sends) are recorded in ``tool_state`` so the
+    later token-based fallback in ``_handle_messenger_event`` can
+    avoid re-sending the same photo.
+    """
+    log.info(
+        "tool_call: name=%s sender=%s args=%s",
+        name, sender, json.dumps(args, ensure_ascii=False)[:200],
+    )
+
+    if name == "lookup_products":
+        results = lookup_products(
+            model=args.get("model") or None,
+            storage=args.get("storage") or None,
+            color=args.get("color") or None,
+            status=args.get("status") or "in_stock",
+        )
+        return json.dumps(
+            {"matches": results, "count": len(results)},
+            ensure_ascii=False,
+        )
+
+    if name == "send_product_photos":
+        code = (args.get("code") or "").strip().upper()
+        if not code:
+            return json.dumps({"error": "missing 'code' argument"})
+        if code in tool_state["photos_sent_codes"]:
+            return json.dumps({
+                "status": "already_sent",
+                "code": code,
+                "note": "ảnh em này đã gửi turn này rồi",
+            })
+        product = find_by_code(code)
+        if not product:
+            return json.dumps({
+                "error": "code not found in catalog",
+                "code": code,
+                "hint": "gọi lookup_products trước để lấy code chính xác",
+            })
+        photos = product_photos(code, max_photos=3)
+        if not photos:
+            return json.dumps({
+                "error": "no photos available for this product",
+                "code": code,
+            })
+        await _send_product_photos(sender, code)
+        tool_state["photos_sent_codes"].add(code)
+        return json.dumps({
+            "status": "sent",
+            "code": code,
+            "n_photos": len(photos),
+        })
+
+    log.warning("tool_call: unknown name=%s", name)
+    return json.dumps({"error": f"unknown tool '{name}'"})
 
 
 async def _send_product_photos(sender: str, code: str) -> None:

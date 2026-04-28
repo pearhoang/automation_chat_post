@@ -245,6 +245,78 @@ def find_products_in_text(text: str) -> list[dict]:
     return [p for _, p in candidates]
 
 
+def lookup_products(
+    *,
+    model: str | None = None,
+    storage: str | None = None,
+    color: str | None = None,
+    status: str | None = "in_stock",
+    max_results: int = 12,
+) -> list[dict]:
+    """Filter the catalog by free-text fields. Used by the LLM tool layer.
+
+    The LLM passes Vietnamese-shorthand strings ("15 PM", "1TB", "Vàng
+    Sa Mạc") and we match leniently using ``_normalize`` + alias
+    expansion. ``status`` can be ``"in_stock"`` (default), ``"sold"``,
+    or ``"any"``. Other filters are AND-ed together; an empty/None
+    filter matches everything for that field.
+
+    Returns a list of compact dicts (only the fields the LLM needs to
+    answer the customer): ``code``, ``model``, ``storage``, ``color``,
+    ``status``, ``price_vnd``, ``battery``, ``warranty_until``,
+    ``added_at``. Sorted in_stock-first then newest-first.
+    """
+    model_q = _normalize(model or "")
+    storage_q = _normalize(storage or "")
+    color_q = _normalize(color or "")
+    status_q = (status or "in_stock").lower().strip()
+
+    matches: list[tuple[tuple, dict]] = []
+    for p in all_products():
+        p_status = (p.get("status") or "").lower()
+        if status_q == "in_stock" and p_status != "in_stock":
+            continue
+        if status_q == "sold" and p_status != "sold":
+            continue
+        # status_q == "any" → no status filter
+
+        if storage_q:
+            p_storage = _normalize(p.get("storage", ""))
+            if not p_storage or storage_q not in p_storage:
+                continue
+        if color_q:
+            p_color = _normalize(p.get("color", ""))
+            if not p_color or color_q not in p_color:
+                continue
+        if model_q:
+            aliases = _model_aliases(p.get("model", ""))
+            if not any(model_q in a or a in model_q for a in aliases):
+                continue
+
+        rank = (
+            0 if p_status == "in_stock" else 1,
+            tuple(-ord(c) for c in (p.get("added_at") or "")),
+        )
+        matches.append((rank, p))
+
+    matches.sort(key=lambda x: x[0])
+    out: list[dict] = []
+    keys = (
+        "code",
+        "model",
+        "storage",
+        "color",
+        "status",
+        "price_vnd",
+        "battery",
+        "warranty_until",
+        "added_at",
+    )
+    for _, p in matches[:max_results]:
+        out.append({k: p.get(k) for k in keys if p.get(k) is not None})
+    return out
+
+
 def context_for_llm(*, max_items: int = 30) -> str:
     """Compact human-readable inventory context for LLM prompts.
 

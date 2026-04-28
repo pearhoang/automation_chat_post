@@ -4,15 +4,136 @@ Uses OpenAI-compatible Chat Completions (works with OpenAI, DeepSeek,
 9Router, OpenRouter, …). Swap out by editing this single file.
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import re
+from typing import Awaitable, Callable
 
 import httpx
 
 from .config import settings
 
 log = logging.getLogger(__name__)
+
+# Function/tool schema sent to the LLM. The actual implementations live
+# in the webhook handler (so they can attach photos, persist state,
+# etc.); this module only knows the *shape* of each call. Wired in via
+# the ``tool_executor`` callback passed to ``draft_reply``.
+#
+# Why expose tools at all when we already dump the catalog in the
+# system prompt? Two reasons:
+#   1. Code hallucination. The LLM sometimes invents codes
+#      ("IP15PM-256-BLU-002" vs the real "IP15PM-256GB-BLU-002") even
+#      when the dump shows the real code right above. With tools, it
+#      is forced to either copy a code from a real result or skip the
+#      photo step entirely. ``find_by_code`` was a safety net but the
+#      customer still sees the empty "gửi bạn ảnh nha" promise.
+#   2. The ``[SEND_PHOTOS:CODE]`` token was load-bearing AND brittle:
+#      one missing newline / extra space and the token slipped into
+#      the customer-visible text. A tool call cannot be malformed
+#      that way (the SDK enforces a strict JSON envelope), and the
+#      execution (sending photos) is decoupled from the text reply.
+#
+# We keep the legacy token parsing as a belt-and-suspenders fallback
+# in main.py — if a future model variant ignores tools we still get
+# something sensible.
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "lookup_products",
+            "description": (
+                "Tra catalog kho. Gọi khi cần biết máy nào còn / hết, "
+                "code chính xác, giá, pin, BH. Trả về list máy khớp filter, "
+                "đã sort in_stock-first + newest-first. Ưu tiên dùng tool "
+                "này thay vì tự đoán code/giá từ block 'Kho hiện có…' — "
+                "block đó chỉ là tham khảo nhanh, có thể stale. Để filter "
+                "trống ('') = không filter trên field đó."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "model": {
+                        "type": "string",
+                        "description": (
+                            "Model viết tự nhiên: '15 PM', '15 prm', "
+                            "'iPhone 17 Pro Max', 'ip 14 PM'. Để '' nếu "
+                            "khách chưa nói rõ model."
+                        ),
+                    },
+                    "storage": {
+                        "type": "string",
+                        "description": (
+                            "Dung lượng: '256GB', '1TB', '128GB'. Để '' "
+                            "nếu khách chưa nói."
+                        ),
+                    },
+                    "color": {
+                        "type": "string",
+                        "description": (
+                            "Màu: 'Silver', 'Black', 'Vàng Sa Mạc', "
+                            "'Titan'. Để '' nếu khách chưa nói."
+                        ),
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": ["in_stock", "sold", "any"],
+                        "description": (
+                            "in_stock = chỉ máy còn hàng (mặc định), "
+                            "sold = máy đã bán, any = mọi trạng thái."
+                        ),
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "send_product_photos",
+            "description": (
+                "Gửi ảnh thật của 1 máy cho khách qua Messenger. Gọi khi "
+                "khách xin ảnh / 'cho xem máy' / 'show ảnh' / 'cho xem "
+                "lại ảnh' của 1 em CỤ THỂ. Bắt buộc dùng code chính xác "
+                "(lấy từ kết quả ``lookup_products`` hoặc block kho). "
+                "SAU khi gọi tool, vẫn cần trả 1 câu text ngắn đi kèm "
+                "(vd 'gửi bạn ảnh em đó nha') để khách thấy lời mở đầu. "
+                "Nếu code không khớp catalog tool sẽ trả lỗi — đừng tự "
+                "đoán code, hỏi lại khách hoặc gọi lookup_products."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "code": {
+                        "type": "string",
+                        "description": (
+                            "Mã máy CHÍNH XÁC trong catalog, vd "
+                            "'IP15PM-256GB-BLU-002'. Phải copy chuẩn — "
+                            "thiếu ký tự là tool reject."
+                        ),
+                    },
+                },
+                "required": ["code"],
+            },
+        },
+    },
+]
+
+
+# Maximum number of LLM round-trips per turn when the model keeps
+# emitting tool_calls. 3 is enough for: lookup → maybe send_photos →
+# final answer. Higher would let a buggy prompt loop itself into a
+# rate-limit incident.
+_MAX_TOOL_ITERATIONS = 3
+
+
+# Type alias for the executor callback. Returns a JSON-serialisable
+# string (already encoded) describing the tool result; main.py is the
+# one that knows how to execute (it has the ``sender`` PSID for
+# send_product_photos, etc.).
+ToolExecutor = Callable[[str, dict], Awaitable[str]]
 
 # Persona + tone + few-shot examples.
 #
@@ -57,38 +178,49 @@ SYSTEM_PROMPT = (
     "'STATUS=sold' của đúng máy đó). Nếu 'sold' → 'em đó vừa bán mất "
     "bạn ơi, có [Y tương tự] nếu bạn quan tâm', đừng nói còn hàng.\n\n"
 
-    "GỬI ẢNH SẢN PHẨM ([SEND_PHOTOS:CODE]):\n"
-    "- Khi khách xin xem ảnh / 'cho xem máy đi' / 'show ảnh' / 'gửi "
-    "ảnh thật' / 'cho xem lại ảnh' của 1 máy cụ thể, bạn BẮT BUỘC "
-    "phải bắt đầu reply bằng token:\n"
-    "    [SEND_PHOTOS:<CODE>]<text trả lời ngắn, tự nhiên>\n"
-    "- KHÔNG được nói 'mình gửi ảnh nhé' / 'gửi bạn ảnh em đó nè' "
-    "mà KHÔNG có token đầu — token là CÁCH DUY NHẤT để webhook "
-    "thực sự đính kèm ảnh; viết tay không có token = chỉ ra text, "
-    "không gửi được ảnh, khách sẽ nghĩ shop xạo.\n"
-    "- Token này áp dụng cho MỌI lần khách xin ảnh trong cùng cuộc "
-    "DM, kể cả lần thứ 2/3/4 ('cho xem lại đi', 'gửi nữa', 'thêm "
-    "ảnh', 'send more pics'). Mỗi lần khách xin = 1 lần emit token.\n"
-    "- <CODE> CHÍNH XÁC là code đang có trong block kho hệ thống đưa, "
-    "vd 'IP17PM-1TB-SLV-001'. Quy tắc chọn code:\n"
-    "  1. Nếu context có 'current_product_code: <CODE>' (em khách "
-    "vừa hỏi gần nhất) → DÙNG code đó. Đây là focus mới nhất, ưu "
-    "tiên cao hơn product_code của post.\n"
-    "  2. Nếu KHÔNG có current_product_code mà có 'product_code: "
-    "<CODE>' (post khách đang xem) → DÙNG code đó.\n"
-    "  3. Nếu khách vừa nhắc rõ 1 máy khác trong câu HIỆN TẠI (vd "
-    "'cho xem ảnh con 14 PM 256GB') → DÙNG code của em đó (tra block "
-    "'Kho hiện có…' để lấy code), KHÔNG dùng product_code cũ.\n"
-    "  4. Nếu code không khớp kho → hệ thống bỏ qua, KHÔNG bịa code.\n"
+    "TOOL CALLS (cách shop tương tác với hệ thống — ƯU TIÊN tool "
+    "thay vì tự đoán):\n"
+    "- ``lookup_products(model, storage, color, status)`` — tra "
+    "catalog. Bắt buộc gọi khi khách hỏi 'còn không', 'giá', 'pin', "
+    "'BH', 'có 17 PM 1TB không', 'có máy nào dưới 20tr' v.v. ĐỪNG "
+    "dựa vào trí nhớ riêng của bạn — tool là source of truth, dump "
+    "kho trong context có thể stale.\n"
+    "- ``send_product_photos(code)`` — gửi ảnh máy. Gọi khi khách "
+    "xin ảnh / 'cho xem máy đi' / 'show ảnh' / 'cho xem lại ảnh' "
+    "/ 'gửi ảnh thật' của 1 em CỤ THỂ. Cần code chính xác — nếu "
+    "chưa có code trong context, gọi lookup_products trước. Sau "
+    "send_product_photos vẫn phải trả 1 câu text ngắn (vd 'gửi "
+    "bạn ảnh em đó nha, máy đẹp lắm') — tool gửi ảnh, text là "
+    "lời mở đầu cho ảnh.\n"
+    "- Mỗi lần khách xin ảnh = 1 lần gọi ``send_product_photos`` "
+    "(kể cả lần thứ 2/3/4: 'cho xem lại đi', 'gửi nữa', 'thêm "
+    "ảnh', 'send more pics'). Đừng tiếc tool call.\n"
+    "- Quy tắc chọn code khi gọi ``send_product_photos``:\n"
+    "  1. Context có 'current_product_code: <CODE>' (em khách "
+    "vừa hỏi gần nhất) → DÙNG code đó (focus mới nhất).\n"
+    "  2. Không có current_product_code, có 'product_code: <CODE>' "
+    "(post khách đang xem) → DÙNG code đó.\n"
+    "  3. Khách vừa nhắc rõ 1 máy khác trong câu hiện tại (vd 'cho "
+    "xem ảnh con 14 PM 256GB') → gọi lookup_products lấy code "
+    "máy đó, rồi gọi send_product_photos.\n"
+    "  4. Code không khớp catalog → tool trả error → ĐỪNG đoán, "
+    "hỏi lại khách hoặc lookup_products lại.\n"
     "- Khi khách hỏi 1 model + dung lượng MÀ KHO CÓ NHIỀU MÀU "
-    "(vd 'có 14 PM 128GB không' và kho có cả Black + bản thường), "
-    "ưu tiên màu khớp post hoặc màu khách đã nhắc; nếu không suy "
-    "ra được, hỏi lại 'bạn xem màu Black hay bản thường ạ?' KHÔNG "
-    "đoán bừa.\n"
-    "- Nếu khách xin ảnh nhưng chưa rõ máy nào (DM cold, không có "
-    "post context, lịch sử cũng chưa nhắc tới máy cụ thể, hoặc bot "
-    "vừa list nhiều em): hỏi lại 'bạn xem máy nào, mình có [list "
-    "ngắn]?' — KHÔNG emit token với code đoán mò.\n\n"
+    "(vd '14 PM 128GB' có cả Black + bản thường): gọi "
+    "lookup_products xem có bao nhiêu candidate. >1 + khách chưa "
+    "nói màu → hỏi lại 'bạn xem màu nào ạ?' KHÔNG đoán bừa.\n"
+    "- Khi khách xin ảnh nhưng chưa rõ máy nào (DM cold, không "
+    "post context, history cũng chưa nhắc máy cụ thể, hoặc bot "
+    "vừa list nhiều em): KHÔNG gọi send_product_photos đoán mò. "
+    "Hỏi lại 'bạn xem máy nào, mình có [list ngắn]?'\n"
+    "\n"
+    "FALLBACK TOKEN ([SEND_PHOTOS:CODE] — chỉ khi không gọi tool "
+    "được):\n"
+    "- Cách CHÍNH là gọi ``send_product_photos``. Nếu không gọi "
+    "được tool (vd config provider tạm thời tắt tool), thay bằng "
+    "token ở đầu reply: ``[SEND_PHOTOS:<CODE>]<text>``. Không bao "
+    "giờ vừa gọi tool vừa emit token cho cùng 1 lần xin ảnh — "
+    "trùng = ảnh gửi 2 lần.\n\n"
 
     "PRIVATE REPLY ([PRIVATE_REPLY] — CHỈ comment, KHÔNG DM):\n"
     "- Token này CHỈ được dùng khi context có dòng 'Khách đang comment "
@@ -143,16 +275,16 @@ SYSTEM_PROMPT = (
     "  S: 33tr nhé bạn, em silver 1TB pin 100% còn BH đến 10/2026\n"
     "\n"
     "  K: cho xem ảnh máy đó đi\n"
-    "  S: [SEND_PHOTOS:IP17PM-1TB-SLV-001]gửi bạn ảnh em đó nè, máy "
-    "còn đẹp lắm\n"
+    "  S: [tool: send_product_photos(code='IP17PM-1TB-SLV-001')]\n"
+    "  S: gửi bạn ảnh em đó nè, máy còn đẹp lắm\n"
     "\n"
     "  K: cho xem lại ảnh đi\n"
-    "  S: [SEND_PHOTOS:IP14PM-128-BLK-001]gửi lại bạn ảnh em đó "
-    "nha, máy vẫn còn đẹp\n"
+    "  S: [tool: send_product_photos(code='IP14PM-128GB-BLK-001')]\n"
+    "  S: gửi lại bạn ảnh em đó nha, máy vẫn còn đẹp\n"
     "\n"
     "  K: gửi ảnh thật cho mình xem nữa\n"
-    "  S: [SEND_PHOTOS:IP14PM-128-BLK-001]ờ gửi bạn thêm vài tấm "
-    "nha\n"
+    "  S: [tool: send_product_photos(code='IP14PM-128GB-BLK-001')]\n"
+    "  S: ờ gửi bạn thêm vài tấm nha\n"
     "\n"
     "  K: máy đó còn không bạn\n"
     "  S: còn nha bạn, nếu chốt thì mình giữ máy cho\n"
@@ -180,8 +312,8 @@ SYSTEM_PROMPT = (
     "khách đã chuyển sang hỏi 15 PM; context có "
     "'current_product_code: IP15PM-256GB-BLU-002')\n"
     "  K: cho mình xem ảnh\n"
-    "  S: [SEND_PHOTOS:IP15PM-256GB-BLU-002]gửi bạn ảnh em 15 PM "
-    "đó nha, máy đẹp lắm\n"
+    "  S: [tool: send_product_photos(code='IP15PM-256GB-BLU-002')]\n"
+    "  S: gửi bạn ảnh em 15 PM đó nha, máy đẹp lắm\n"
     "\n"
     "  (Bot vừa list 3 em 14 PM, 15 PM, 17 PM — ambiguous)\n"
     "  K: cho mình xem ảnh\n"
@@ -347,11 +479,23 @@ async def draft_reply(
     *,
     context: str | None = None,
     history: list[dict] | None = None,
+    tool_executor: ToolExecutor | None = None,
 ) -> str:
+    """Draft a Messenger reply, optionally letting the LLM call tools.
+
+    When ``tool_executor`` is provided, the LLM gets the ``TOOLS``
+    schema and can request data lookups / photo sends mid-turn. We
+    loop up to ``_MAX_TOOL_ITERATIONS`` times: each iteration is
+    one round-trip to the model. The loop ends when the model
+    returns a plain text response (no ``tool_calls``). With no
+    executor we fall back to the original single-shot behaviour
+    (kept for ``classify_comment`` and any caller that doesn't
+    have a tool runtime).
+    """
     if not settings.openai_api_key:
         return ""  # auto-reply disabled when no key
 
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
     if context:
         messages.append({"role": "system", "content": f"Context: {context}"})
 
@@ -362,9 +506,9 @@ async def draft_reply(
             "content": (
                 "Customer is messaging in English. Reply in natural, "
                 "friendly English (same shop owner persona — short, "
-                "no emoji, no period at end, casual). Still use the "
-                "[SEND_PHOTOS:CODE] / [PRIVATE_REPLY] tokens exactly "
-                "as defined."
+                "no emoji, no period at end, casual). Still call the "
+                "tools (lookup_products / send_product_photos) and "
+                "use [PRIVATE_REPLY] tokens exactly as defined."
             ),
         })
 
@@ -372,13 +516,81 @@ async def draft_reply(
         messages.extend(history)
     messages.append({"role": "user", "content": user_text})
 
-    payload = {
-        "model": settings.openai_model,
-        "messages": messages,
-        "temperature": 0.7,
-        "max_tokens": 260,
-    }
-    return await _chat_completion(payload)
+    if tool_executor is None:
+        payload = {
+            "model": settings.openai_model,
+            "messages": messages,
+            "temperature": 0.7,
+            "max_tokens": 260,
+        }
+        return await _chat_completion(payload)
+
+    last_text = ""
+    for iteration in range(_MAX_TOOL_ITERATIONS):
+        payload = {
+            "model": settings.openai_model,
+            "messages": messages,
+            "tools": TOOLS,
+            "tool_choice": "auto",
+            "temperature": 0.7,
+            "max_tokens": 320,
+        }
+        msg = await _chat_completion_message(payload)
+        if not msg:
+            return last_text
+        content = (msg.get("content") or "").strip()
+        tool_calls = msg.get("tool_calls") or []
+        if content:
+            last_text = content
+
+        if not tool_calls:
+            return content
+
+        # Persist the assistant turn (with tool_calls) so the next
+        # iteration's request includes proper continuity. The
+        # ``content`` field may legitimately be empty when the model
+        # only emits tool calls; OpenAI / DeepSeek accept that.
+        assistant_turn = {
+            "role": "assistant",
+            "content": content or None,
+            "tool_calls": tool_calls,
+        }
+        messages.append(assistant_turn)
+
+        for tc in tool_calls:
+            tc_id = tc.get("id") or ""
+            fn = (tc.get("function") or {})
+            name = fn.get("name") or ""
+            raw_args = fn.get("arguments") or "{}"
+            try:
+                args = json.loads(raw_args) if raw_args else {}
+            except json.JSONDecodeError:
+                log.warning(
+                    "tool_call: bad JSON args name=%s raw=%s",
+                    name, raw_args[:200],
+                )
+                args = {}
+            try:
+                result = await tool_executor(name, args)
+            except Exception:  # noqa: BLE001
+                log.exception("tool_executor crashed name=%s args=%s", name, args)
+                result = json.dumps({"error": "tool execution failed"})
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc_id,
+                "content": result if isinstance(result, str) else json.dumps(result),
+            })
+        log.info(
+            "draft_reply: iter=%d tools=%s",
+            iteration,
+            [tc.get("function", {}).get("name") for tc in tool_calls],
+        )
+
+    log.warning(
+        "draft_reply: hit max tool iterations (%d), returning last text",
+        _MAX_TOOL_ITERATIONS,
+    )
+    return last_text
 
 
 async def classify_comment(text: str) -> dict:
@@ -429,27 +641,43 @@ async def classify_comment(text: str) -> dict:
 
 async def _chat_completion(payload: dict) -> str:
     """POST to the configured OpenAI-compatible endpoint and return content."""
+    msg = await _chat_completion_message(payload)
+    if not msg:
+        return ""
+    return (msg.get("content") or "").strip()
+
+
+async def _chat_completion_message(payload: dict) -> dict | None:
+    """POST to the LLM endpoint and return the raw ``message`` dict.
+
+    Used by the tool-calling loop in ``draft_reply`` which needs both
+    ``content`` and ``tool_calls`` from the response. ``None`` on
+    network/HTTP failure so the caller can degrade gracefully.
+    """
     url = settings.openai_base_url.rstrip("/") + "/chat/completions"
     headers = {
         "Authorization": f"Bearer {settings.openai_api_key}",
         "Content-Type": "application/json",
     }
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             r = await client.post(url, headers=headers, json=payload)
             if r.status_code >= 400:
                 log.error(
                     "LLM call failed status=%s body=%s",
                     r.status_code, r.text[:300],
                 )
-                return ""
+                return None
             data = r.json()
     except httpx.HTTPError as exc:
         log.warning("LLM HTTP error: %s", exc)
-        return ""
+        return None
 
     try:
-        return (data["choices"][0]["message"]["content"] or "").strip()
+        return data["choices"][0]["message"]
     except (KeyError, IndexError, TypeError) as exc:
-        log.warning("LLM unexpected response shape: %s body=%s", exc, str(data)[:300])
-        return ""
+        log.warning(
+            "LLM unexpected response shape: %s body=%s",
+            exc, str(data)[:300],
+        )
+        return None
