@@ -53,14 +53,22 @@ _SEND_PHOTOS_RE = re.compile(r"^\s*\[SEND_PHOTOS:\s*([A-Z0-9_-]+)\s*\]\s*", re.I
 # stripped form (no Vietnamese tone marks).
 _PHOTO_REQUEST_RE = re.compile(
     r"(?:"
-    # "[xem|cho xem] [lại] [ảnh|hình|máy|em|con|video|clip]"
-    r"\bxem\s+(?:lai\s+)?(?:anh|hinh|video|clip)\b"
-    r"|\bcho\s+(?:minh\s+)?xem\s+(?:lai\s+)?"
-    r"(?:anh|hinh|may|em|con|video|clip)\b"
-    # "gửi [lại] [ảnh|hình|video|clip]"
-    r"|\bgu?i\s+(?:lai\s+)?(?:anh|hinh|video|clip)\b"
-    # bare "ảnh|hình + [lại|thật|thêm|chi tiết|nữa|khac]"
-    r"|\b(?:anh|hinh)\s+(?:lai|that|them|chi\s*tiet|nua|khac)\b"
+    # "[xem|coi] [≤3 tokens] [anh|hinh|video|clip|may|em|con]" —
+    # "xem ảnh", "coi máy", "xem kỹ máy này", "xem cho rõ ảnh".
+    r"\b(?:xem|coi|show)\s+(?:\w+\s+){0,3}"
+    r"(?:anh|hinh|video|clip|may|em|con)\b"
+    # "[xem|coi] [≤3 tokens] [lai|nua|them|that|khac|chi tiet]" —
+    # "xem lại", "xem kỹ lại", "xem nữa", "xem thêm".
+    r"|\b(?:xem|coi)\s+(?:\w+\s+){0,3}"
+    r"(?:lai|nua|them|that|khac|chi\s*tiet)\b"
+    # "[anh|hinh] [≤3 tokens] [lai|that|them|nua|khac|chi tiet]" —
+    # "ảnh thật", "ảnh máy nữa", "hình con đó thêm".
+    r"|\b(?:anh|hinh)\s+(?:\w+\s+){0,3}"
+    r"(?:lai|that|them|chi\s*tiet|nua|khac)\b"
+    # "[gui|gửi] [≤3 tokens] [anh|hinh|video|clip]" — "gửi ảnh",
+    # "gửi mình ảnh thật", "gửi lại video".
+    r"|\b(?:gui|gửi)\s+(?:\w+\s+){0,3}"
+    r"(?:anh|hinh|video|clip)\b"
     # English fallbacks
     r"|\bsend\s+(?:me\s+)?(?:more\s+)?(?:photos?|pics?|images?|videos?)\b"
     r"|\b(?:more|another)\s+(?:photos?|pics?|images?)\b"
