@@ -105,30 +105,43 @@ def match_post_to_product(post_text: str) -> dict | None:
     The post_text is the caption of a Page post (e.g. "iPhone 17 Pro
     256GB Orange bản Mỹ, sạc 47 lần, pin 100%, giá 28.99tr"). We pick
     the product whose model + storage + color all appear (substring,
-    diacritic-insensitive) inside the normalized post text. If multiple
-    match (e.g. 2 units of the same model), prefer the in_stock one.
+    diacritic-insensitive) inside the normalized post text.
+
+    Matching is intentionally lenient: we *require* model + storage to
+    appear in the post body; ``color`` is a tie-breaker only. This
+    avoids spurious misses when the catalog uses Vietnamese color
+    names ("Đen", "Trắng") and the post caption uses English ones
+    ("Black", "White") or vice-versa, OR the post simply omits the
+    color (Apple Pages often write "iPhone 14 Pro Max 128GB chính
+    hãng VN/A" without spelling out the color in the caption).
+
+    Tie-breakers (lower is better):
+      1. Color match (color present in haystack) wins over no-color
+         match — so when two units differ only in color we still
+         prefer the right one.
+      2. ``in_stock`` beats ``sold``.
+      3. Newer ``added_at`` first (recent listings beat stale ones).
     """
     if not post_text:
         return None
     haystack = _normalize(post_text)
     candidates: list[tuple[tuple, dict]] = []
     for p in all_products():
-        bits = [
-            _normalize(p.get("model", "")),
-            _normalize(p.get("storage", "")),
-            _normalize(p.get("color", "")),
-        ]
-        bits = [b for b in bits if b]
-        if not bits:
+        model = _normalize(p.get("model", ""))
+        storage = _normalize(p.get("storage", ""))
+        color = _normalize(p.get("color", ""))
+        if not (model and storage):
             continue
-        if all(b in haystack for b in bits):
-            # tie-breaker: in_stock beats sold; newer added_at first
-            rank = (
-                0 if p.get("status") == "in_stock" else 1,
-                # Negative ASCII tuple of added_at sorts newer first.
-                tuple(-ord(c) for c in (p.get("added_at") or "")),
-            )
-            candidates.append((rank, p))
+        if model not in haystack or storage not in haystack:
+            continue
+        color_match = bool(color and color in haystack)
+        rank = (
+            0 if color_match else 1,
+            0 if p.get("status") == "in_stock" else 1,
+            # Negative ASCII tuple of added_at sorts newer first.
+            tuple(-ord(c) for c in (p.get("added_at") or "")),
+        )
+        candidates.append((rank, p))
     if not candidates:
         return None
     candidates.sort(key=lambda x: x[0])

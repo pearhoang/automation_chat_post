@@ -42,6 +42,50 @@ from .telegram import handle_update as tg_handle_update, notify_admin, tg
 # by the webhook and never forwarded to the customer.
 _SEND_PHOTOS_RE = re.compile(r"^\s*\[SEND_PHOTOS:\s*([A-Z0-9_-]+)\s*\]\s*", re.I)
 
+# Heuristic: customer is asking us to send (or re-send) a product photo.
+# Used as a fallback when the LLM forgets to emit [SEND_PHOTOS:CODE]
+# but the post-context already pinned a specific product. We err on
+# the inclusive side — a missing photo is more annoying than an extra
+# one and the photo-send only fires when we have a concrete product.
+#
+# We match against the diacritic-stripped text so customers writing
+# "anh that" or "ảnh thật" both hit. Patterns are written in the
+# stripped form (no Vietnamese tone marks).
+_PHOTO_REQUEST_RE = re.compile(
+    r"(?:"
+    # "[xem|cho xem] [lại] [ảnh|hình|máy|em|con|video|clip]"
+    r"\bxem\s+(?:lai\s+)?(?:anh|hinh|video|clip)\b"
+    r"|\bcho\s+(?:minh\s+)?xem\s+(?:lai\s+)?"
+    r"(?:anh|hinh|may|em|con|video|clip)\b"
+    # "gửi [lại] [ảnh|hình|video|clip]"
+    r"|\bgu?i\s+(?:lai\s+)?(?:anh|hinh|video|clip)\b"
+    # bare "ảnh|hình + [lại|thật|thêm|chi tiết|nữa|khac]"
+    r"|\b(?:anh|hinh)\s+(?:lai|that|them|chi\s*tiet|nua|khac)\b"
+    # English fallbacks
+    r"|\bsend\s+(?:me\s+)?(?:more\s+)?(?:photos?|pics?|images?|videos?)\b"
+    r"|\b(?:more|another)\s+(?:photos?|pics?|images?)\b"
+    r"|\bshow\s+(?:me\s+)?(?:more\s+)?(?:photos?|pics?|images?)\b"
+    r")",
+    re.I,
+)
+
+
+def _strip_diacritics(text: str) -> str:
+    """Lowercase + strip Vietnamese diacritics for fuzzy keyword match."""
+    import unicodedata
+
+    nfkd = unicodedata.normalize("NFKD", text or "")
+    plain = "".join(c for c in nfkd if not unicodedata.combining(c))
+    # đ/Đ aren't decomposable via NFKD — strip manually so "đẹp" → "dep".
+    return plain.lower().replace("đ", "d").replace("Đ", "d")
+
+
+def _is_photo_request(text: str) -> bool:
+    """Best-effort detect: customer asking the shop to send product photos."""
+    if not text:
+        return False
+    return bool(_PHOTO_REQUEST_RE.search(_strip_diacritics(text)))
+
 # Comment replies may emit "[PRIVATE_REPLY]<dm body>\n<public reply>" so we
 # can both DM the commenter (Private Reply) AND post the public response.
 # The LLM is expected to put the private message FIRST (a single line, no
@@ -228,6 +272,28 @@ async def _handle_messenger_event(evt: dict) -> None:
             if not text_reply:
                 text_reply = "ể mình check lại ảnh em đó đã nhé bạn"
 
+    # Fallback: the LLM keeps drifting away from emitting the
+    # [SEND_PHOTOS:CODE] directive on follow-up requests like "cho xem
+    # lại ảnh đi" / "gửi ảnh thật cho mình" / "send more pics". When
+    # that happens AND the post-context already pinned a concrete
+    # product (matched_product), attach photos for that product so
+    # the bot's promise of "gửi bạn ảnh em đó nè" doesn't read as
+    # empty. Skip if we already sent photos this turn or there's no
+    # matched product (would require asking which one).
+    if (
+        not photos_sent
+        and matched_product
+        and _is_photo_request(text)
+    ):
+        fallback_code = str(matched_product.get("code", "")).upper()
+        if fallback_code and find_by_code(fallback_code):
+            log.info(
+                "send_photos: fallback code=%s sender=%s text=%s",
+                fallback_code, sender, text[:80],
+            )
+            await _send_product_photos(sender, fallback_code)
+            photos_sent = True
+
     if text_reply:
         await fb.send_message(sender, text_reply)
     # remember the *clean* reply (without the [SEND_PHOTOS] token) so the
@@ -363,9 +429,15 @@ async def _forward_comment_to_admin(
     post_id: str | None,
     from_name: str | None,
     hidden: bool,
+    deleted: bool = False,
 ) -> None:
     """Push a moderation alert to the Telegram admin (best-effort)."""
-    flag = "🚫 ĐÃ ẨN" if hidden else "⚠️ CẦN XEM"
+    if deleted:
+        flag = "🗑️ ĐÃ XOÁ"
+    elif hidden:
+        flag = "🚫 ĐÃ ẨN"
+    else:
+        flag = "⚠️ CẦN XEM"
     parts = [
         f"{flag} comment ({label}, {int(confidence * 100)}%)",
         f"từ: {from_name or '?'}",
@@ -415,15 +487,30 @@ async def _handle_page_change(change: dict) -> None:
     )
 
     hide_labels = _split_labels(settings.comment_auto_hide_labels)
+    delete_labels = _split_labels(settings.comment_auto_delete_labels)
     forward_labels = _split_labels(settings.comment_forward_labels)
     skip_reply_labels = _split_labels(settings.comment_skip_reply_labels)
     min_conf = settings.comment_action_min_confidence
 
-    # Auto-hide flagged comments first so they disappear from public view
-    # before we even draft a reply. We only hide when the classifier is
-    # confident — low-confidence calls fall through to normal handling.
+    # Moderate the flagged comment first so it disappears before we
+    # even draft a reply. We only act when the classifier is confident
+    # — low-confidence calls fall through to normal handling.
+    #
+    # `delete` wins over `hide` when a label appears in both sets:
+    # `is_hidden=true` only hides the comment from public/non-friends;
+    # the commenter + friends still see it (FB design). For confirmed
+    # spam_toxic the customer wants it *gone* for everyone, so we
+    # DELETE instead.
     hidden = False
-    if label in hide_labels and confidence >= min_conf:
+    deleted = False
+    if confidence >= min_conf and label in delete_labels:
+        try:
+            await fb.delete_comment(comment_id)
+            deleted = True
+            log.info("COMMENT deleted id=%s label=%s", comment_id, label)
+        except Exception:  # noqa: BLE001
+            log.exception("delete_comment failed id=%s", comment_id)
+    elif confidence >= min_conf and label in hide_labels:
         try:
             await fb.hide_comment(comment_id)
             hidden = True
@@ -442,9 +529,14 @@ async def _handle_page_change(change: dict) -> None:
             post_id=post_id,
             from_name=from_name,
             hidden=hidden,
+            deleted=deleted,
         )
 
     if not settings.auto_reply_enabled:
+        return
+    if deleted:
+        # Comment is gone — no point drafting a public reply to a
+        # comment that no longer exists.
         return
     if label in skip_reply_labels and confidence >= min_conf:
         log.info("COMMENT skip_reply id=%s label=%s", comment_id, label)
