@@ -30,6 +30,8 @@ from .fb_client import fb
 from .inventory import (
     context_for_llm as inventory_context,
     find_by_code,
+    find_products_in_text,
+    lookup_products,
     match_post_to_product,
     product_photos,
 )
@@ -41,6 +43,105 @@ from .telegram import handle_update as tg_handle_update, notify_admin, tg
 # photos for that product before sending the text. The token is consumed
 # by the webhook and never forwarded to the customer.
 _SEND_PHOTOS_RE = re.compile(r"^\s*\[SEND_PHOTOS:\s*([A-Z0-9_-]+)\s*\]\s*", re.I)
+
+# Heuristic: customer is asking us to send (or re-send) a product photo.
+# Used as a fallback when the LLM forgets to emit [SEND_PHOTOS:CODE]
+# but the post-context already pinned a specific product. We err on
+# the inclusive side — a missing photo is more annoying than an extra
+# one and the photo-send only fires when we have a concrete product.
+#
+# We match against the diacritic-stripped text so customers writing
+# "anh that" or "ảnh thật" both hit. Patterns are written in the
+# stripped form (no Vietnamese tone marks).
+_PHOTO_REQUEST_RE = re.compile(
+    r"(?:"
+    # "[xem|coi] [≤3 tokens] [anh|hinh|video|clip|may|em|con]" —
+    # "xem ảnh", "coi máy", "xem kỹ máy này", "xem cho rõ ảnh".
+    r"\b(?:xem|coi|show)\s+(?:\w+\s+){0,3}"
+    r"(?:anh|hinh|video|clip|may|em|con)\b"
+    # "[xem|coi] [≤3 tokens] [lai|nua|them|that|khac|chi tiet]" —
+    # "xem lại", "xem kỹ lại", "xem nữa", "xem thêm".
+    r"|\b(?:xem|coi)\s+(?:\w+\s+){0,3}"
+    r"(?:lai|nua|them|that|khac|chi\s*tiet)\b"
+    # "[anh|hinh] [≤3 tokens] [lai|that|them|nua|khac|chi tiet]" —
+    # "ảnh thật", "ảnh máy nữa", "hình con đó thêm".
+    r"|\b(?:anh|hinh)\s+(?:\w+\s+){0,3}"
+    r"(?:lai|that|them|chi\s*tiet|nua|khac)\b"
+    # "[gui|gửi] [≤3 tokens] [anh|hinh|video|clip]" — "gửi ảnh",
+    # "gửi mình ảnh thật", "gửi lại video".
+    r"|\b(?:gui|gửi)\s+(?:\w+\s+){0,3}"
+    r"(?:anh|hinh|video|clip)\b"
+    # English fallbacks
+    r"|\bsend\s+(?:me\s+)?(?:more\s+)?(?:photos?|pics?|images?|videos?)\b"
+    r"|\b(?:more|another)\s+(?:photos?|pics?|images?)\b"
+    r"|\bshow\s+(?:me\s+)?(?:more\s+)?(?:photos?|pics?|images?)\b"
+    r")",
+    re.I,
+)
+
+
+def _strip_diacritics(text: str) -> str:
+    """Lowercase + strip Vietnamese diacritics for fuzzy keyword match."""
+    import unicodedata
+
+    nfkd = unicodedata.normalize("NFKD", text or "")
+    plain = "".join(c for c in nfkd if not unicodedata.combining(c))
+    # đ/Đ aren't decomposable via NFKD — strip manually so "đẹp" → "dep".
+    return plain.lower().replace("đ", "d").replace("Đ", "d")
+
+
+def _is_photo_request(text: str) -> bool:
+    """Best-effort detect: customer asking the shop to send product photos."""
+    if not text:
+        return False
+    return bool(_PHOTO_REQUEST_RE.search(_strip_diacritics(text)))
+
+
+def _current_focus_product(
+    history: list[dict],
+    current_text: str,
+    default: dict | None,
+) -> dict | None:
+    """Resolve which product the conversation is *currently* about.
+
+    The post-context that started the DM thread pins one product, but
+    customers regularly switch ("post bán 17 PM, khách lại hỏi 15 PM
+    nữa") and the "send photos" fallback was sending the *post's*
+    product even after the conversation had moved on. We walk back
+    through the recent turns instead, picking the latest one that
+    references exactly one in_stock catalog item:
+
+      1. The customer's *current* message (lets them say "cho xem ảnh
+         15 PM 256GB" and switch instantly).
+      2. Recent assistant + user history (newest first). Stops as
+         soon as we find a turn that uniquely names one product.
+      3. ``default`` (post-context matched product) — used only if
+         nothing in the conversation is product-specific.
+
+    A turn that names *several* products (vd bot listing the whole
+    stock) is treated as ambiguous and we move further back rather
+    than guess; if no turn is unambiguous we fall through to
+    ``default``. The caller decides whether to attach a photo at all,
+    so worst case is "no photo this turn" rather than the wrong one.
+    """
+    matches = find_products_in_text(current_text)
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        # The customer themselves named multiple products this turn —
+        # don't second-guess; let the LLM ask which one.
+        return None
+    for msg in reversed(history[-12:]):
+        text = msg.get("content") or ""
+        matches = find_products_in_text(text)
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            # Ambiguous turn (vd bot listed several em). Stop and use
+            # the post default rather than walking back further into
+            # potentially stale single-product mentions.
+            return default
+    return default
 
 # Comment replies may emit "[PRIVATE_REPLY]<dm body>\n<public reply>" so we
 # can both DM the commenter (Private Reply) AND post the public response.
@@ -179,13 +280,50 @@ async def _handle_messenger_event(evt: dict) -> None:
                 block.append(f"  giá hiện tại kho: {price/1_000_000:.1f}tr")
         ctx_parts.append("\n".join(block))
 
+    # Track which product the *current* DM is about. Often it's the
+    # post product, but customers regularly switch ("post bán 17 PM,
+    # khách hỏi 15 PM nữa") — surface the latest focus to the LLM so
+    # [SEND_PHOTOS:CODE] picks the right code, AND reuse it as the
+    # heuristic-fallback target if the LLM forgets the token.
+    current_product = _current_focus_product(history, text, matched_product)
+    if current_product and (
+        not matched_product
+        or current_product.get("code") != matched_product.get("code")
+    ):
+        focus_lines = ["Em khách đang hỏi gần nhất trong DM:"]
+        focus_lines.append(
+            "  current_product_code: " + str(current_product.get("code", "?"))
+        )
+        focus_lines.append(
+            "  STATUS: " + str(current_product.get("status", "?"))
+        )
+        price = current_product.get("price_vnd")
+        if price:
+            focus_lines.append(
+                f"  giá hiện tại kho: {price/1_000_000:.1f}tr"
+            )
+        ctx_parts.append("\n".join(focus_lines))
+
     ctx_parts.append(inventory_context())
     ctx_parts.append(shop_info_block())
+
+    # Track tool side-effects (photo sends) so the heuristic fallback
+    # at the bottom doesn't double-fire after a successful tool call.
+    tool_state = {"photos_sent_codes": set()}
+
+    async def _tool_executor(name: str, args: dict) -> str:
+        return await _execute_llm_tool(
+            name=name,
+            args=args,
+            sender=sender,
+            tool_state=tool_state,
+        )
 
     reply = await draft_reply(
         text,
         context="\n\n".join(ctx_parts),
         history=history,
+        tool_executor=_tool_executor,
     )
     if not reply:
         return
@@ -210,14 +348,23 @@ async def _handle_messenger_event(evt: dict) -> None:
     reply = _scrub_tone(reply)
 
     photo_code, text_reply = _extract_photo_directive(reply)
-    photos_sent = False
+    photos_sent = bool(tool_state["photos_sent_codes"])
     if photo_code:
-        # D5: validate the code against the live catalog BEFORE doing any
-        # network calls; if the LLM hallucinated, drop the token silently
-        # so the customer never sees a bogus mention of "sending photos".
-        if find_by_code(photo_code):
+        # If the model already used the ``send_product_photos`` tool
+        # this turn, ignore the (legacy) [SEND_PHOTOS:CODE] token to
+        # avoid sending the same photos twice. Otherwise validate the
+        # code against the live catalog and send via the Send API —
+        # the token path is kept as a fallback for any provider that
+        # doesn't expose tool-calling.
+        if photo_code in tool_state["photos_sent_codes"]:
+            log.info(
+                "send_photos: token=%s already sent via tool, skipping",
+                photo_code,
+            )
+        elif find_by_code(photo_code):
             await _send_product_photos(sender, photo_code)
             photos_sent = True
+            tool_state["photos_sent_codes"].add(photo_code)
         else:
             log.warning(
                 "send_photos: rejected hallucinated code=%s for sender=%s",
@@ -227,6 +374,38 @@ async def _handle_messenger_event(evt: dict) -> None:
             # send a brief apology so the conversation doesn't stall.
             if not text_reply:
                 text_reply = "ể mình check lại ảnh em đó đã nhé bạn"
+
+    # Fallback: the LLM keeps drifting away from emitting the
+    # [SEND_PHOTOS:CODE] directive on follow-up requests like "cho xem
+    # lại ảnh đi" / "gửi ảnh thật cho mình" / "send more pics". When
+    # that happens AND we can pin down a single concrete product the
+    # conversation is currently about, attach photos for that product
+    # so the bot's promise of "gửi bạn ảnh em đó nè" doesn't read as
+    # empty. ``_current_focus_product`` walks back through history to
+    # pick the *latest* product the customer/bot was discussing —
+    # important when the DM started on post X but the customer has
+    # since pivoted to product Y; the old fallback would have sent
+    # the post product's photos (the wrong one). When the focus is
+    # ambiguous (no recent mention or several at once), we send
+    # nothing and rely on the LLM to ask "máy nào".
+    if (
+        not photos_sent
+        and current_product
+        and _is_photo_request(text)
+    ):
+        fallback_code = str(current_product.get("code", "")).upper()
+        if (
+            fallback_code
+            and fallback_code not in tool_state["photos_sent_codes"]
+            and find_by_code(fallback_code)
+        ):
+            log.info(
+                "send_photos: heuristic fallback code=%s sender=%s text=%s",
+                fallback_code, sender, text[:80],
+            )
+            await _send_product_photos(sender, fallback_code)
+            photos_sent = True
+            tool_state["photos_sent_codes"].add(fallback_code)
 
     if text_reply:
         await fb.send_message(sender, text_reply)
@@ -325,6 +504,77 @@ def _extract_photo_directive(reply: str) -> tuple[str | None, str]:
     return m.group(1).upper(), _SEND_PHOTOS_RE.sub("", reply, count=1).strip()
 
 
+async def _execute_llm_tool(
+    *,
+    name: str,
+    args: dict,
+    sender: str,
+    tool_state: dict,
+) -> str:
+    """Run a tool requested by the LLM and return a JSON string result.
+
+    Wired into ``llm.draft_reply`` via the ``tool_executor`` callback.
+    Each tool returns a small JSON-serialised dict the model can parse
+    in the next turn. Errors are returned in-band as ``{"error": ...}``
+    rather than raised so a single bad tool call doesn't kill the
+    whole reply — the model usually self-corrects on retry.
+
+    Side effects (photo sends) are recorded in ``tool_state`` so the
+    later token-based fallback in ``_handle_messenger_event`` can
+    avoid re-sending the same photo.
+    """
+    log.info(
+        "tool_call: name=%s sender=%s args=%s",
+        name, sender, json.dumps(args, ensure_ascii=False)[:200],
+    )
+
+    if name == "lookup_products":
+        results = lookup_products(
+            model=args.get("model") or None,
+            storage=args.get("storage") or None,
+            color=args.get("color") or None,
+            status=args.get("status") or "in_stock",
+        )
+        return json.dumps(
+            {"matches": results, "count": len(results)},
+            ensure_ascii=False,
+        )
+
+    if name == "send_product_photos":
+        code = (args.get("code") or "").strip().upper()
+        if not code:
+            return json.dumps({"error": "missing 'code' argument"})
+        if code in tool_state["photos_sent_codes"]:
+            return json.dumps({
+                "status": "already_sent",
+                "code": code,
+                "note": "ảnh em này đã gửi turn này rồi",
+            })
+        product = find_by_code(code)
+        if not product:
+            return json.dumps({
+                "error": "code not found in catalog",
+                "code": code,
+                "hint": "gọi lookup_products trước để lấy code chính xác",
+            })
+        photos = product_photos(code, max_photos=3)
+        if not photos:
+            return json.dumps({
+                "error": "no photos available for this product",
+                "code": code,
+            })
+        await _send_product_photos(sender, code)
+        tool_state["photos_sent_codes"].add(code)
+        return json.dumps({
+            "status": "sent",
+            "code": code,
+            "n_photos": len(photos),
+        })
+
+    log.warning("tool_call: unknown name=%s", name)
+    return json.dumps({"error": f"unknown tool '{name}'"})
+
+
 async def _send_product_photos(sender: str, code: str) -> None:
     """Look up product by code and send up to 3 photos via Send API."""
     product = find_by_code(code)
@@ -363,9 +613,15 @@ async def _forward_comment_to_admin(
     post_id: str | None,
     from_name: str | None,
     hidden: bool,
+    deleted: bool = False,
 ) -> None:
     """Push a moderation alert to the Telegram admin (best-effort)."""
-    flag = "🚫 ĐÃ ẨN" if hidden else "⚠️ CẦN XEM"
+    if deleted:
+        flag = "🗑️ ĐÃ XOÁ"
+    elif hidden:
+        flag = "🚫 ĐÃ ẨN"
+    else:
+        flag = "⚠️ CẦN XEM"
     parts = [
         f"{flag} comment ({label}, {int(confidence * 100)}%)",
         f"từ: {from_name or '?'}",
@@ -415,15 +671,30 @@ async def _handle_page_change(change: dict) -> None:
     )
 
     hide_labels = _split_labels(settings.comment_auto_hide_labels)
+    delete_labels = _split_labels(settings.comment_auto_delete_labels)
     forward_labels = _split_labels(settings.comment_forward_labels)
     skip_reply_labels = _split_labels(settings.comment_skip_reply_labels)
     min_conf = settings.comment_action_min_confidence
 
-    # Auto-hide flagged comments first so they disappear from public view
-    # before we even draft a reply. We only hide when the classifier is
-    # confident — low-confidence calls fall through to normal handling.
+    # Moderate the flagged comment first so it disappears before we
+    # even draft a reply. We only act when the classifier is confident
+    # — low-confidence calls fall through to normal handling.
+    #
+    # `delete` wins over `hide` when a label appears in both sets:
+    # `is_hidden=true` only hides the comment from public/non-friends;
+    # the commenter + friends still see it (FB design). For confirmed
+    # spam_toxic the customer wants it *gone* for everyone, so we
+    # DELETE instead.
     hidden = False
-    if label in hide_labels and confidence >= min_conf:
+    deleted = False
+    if confidence >= min_conf and label in delete_labels:
+        try:
+            await fb.delete_comment(comment_id)
+            deleted = True
+            log.info("COMMENT deleted id=%s label=%s", comment_id, label)
+        except Exception:  # noqa: BLE001
+            log.exception("delete_comment failed id=%s", comment_id)
+    elif confidence >= min_conf and label in hide_labels:
         try:
             await fb.hide_comment(comment_id)
             hidden = True
@@ -442,9 +713,14 @@ async def _handle_page_change(change: dict) -> None:
             post_id=post_id,
             from_name=from_name,
             hidden=hidden,
+            deleted=deleted,
         )
 
     if not settings.auto_reply_enabled:
+        return
+    if deleted:
+        # Comment is gone — no point drafting a public reply to a
+        # comment that no longer exists.
         return
     if label in skip_reply_labels and confidence >= min_conf:
         log.info("COMMENT skip_reply id=%s label=%s", comment_id, label)

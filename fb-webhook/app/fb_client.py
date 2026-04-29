@@ -112,9 +112,45 @@ class FacebookClient:
         return r.json()
 
     async def hide_comment(self, comment_id: str) -> dict:
+        """Soft-hide a comment (reversible).
+
+        Note: ``is_hidden=true`` only hides the comment from "general"
+        public view. The comment author and their friends can still
+        see it — that's a Facebook product decision so spammers don't
+        notice they've been muted. For comments that must disappear
+        for *everyone* (clear spam/toxic), use ``delete_comment``.
+
+        Requires ``pages_manage_engagement`` on the Page Token.
+        """
         url = f"{self.base}/{comment_id}"
         params = {"access_token": self.page_token}
         r = await self._http.post(url, params=params, data={"is_hidden": "true"})
+        if r.status_code >= 400:
+            log.error(
+                "hide_comment failed status=%s body=%s", r.status_code, r.text
+            )
+        r.raise_for_status()
+        return r.json()
+
+    async def delete_comment(self, comment_id: str) -> dict:
+        """Hard-delete a comment so it disappears for *every* viewer.
+
+        Unlike ``is_hidden=true``, ``DELETE /{comment_id}`` removes
+        the comment for the author and their friends as well — the
+        only correct action for confirmed spam/toxic.
+
+        Requires ``pages_manage_engagement`` on the Page Token. Not
+        reversible — use only when the moderation classifier is
+        highly confident.
+        """
+        url = f"{self.base}/{comment_id}"
+        params = {"access_token": self.page_token}
+        r = await self._http.delete(url, params=params)
+        if r.status_code >= 400:
+            log.error(
+                "delete_comment failed status=%s body=%s",
+                r.status_code, r.text,
+            )
         r.raise_for_status()
         return r.json()
 

@@ -35,14 +35,23 @@ class Settings(BaseSettings):
 
     # Comment moderation. Each setting is a comma-separated list of labels
     # produced by `llm.classify_comment` (positive | neutral | question |
-    # negative | spam_toxic). Defaults are conservative: only spam/toxic
-    # gets auto-hidden, both negative and spam_toxic get forwarded to the
-    # admin Telegram, and only spam_toxic gets skipped on auto-reply.
-    comment_auto_hide_labels: str = "spam_toxic"
+    # negative | spam_toxic).
+    #
+    # `is_hidden=true` (auto-hide) only hides the comment from "general"
+    # public viewers — the original commenter and their friends still
+    # see it (FB design). For comments that must disappear for *every*
+    # viewer, use ``comment_auto_delete_labels`` (DELETE /{comment_id},
+    # not reversible). A label can appear in either set; if it's in
+    # both, delete wins. Default: spam/toxic gets fully deleted (so
+    # spam doesn't bleed through to friends-of-spammer), borderline
+    # cases stay empty so a human can decide.
+    comment_auto_hide_labels: str = ""
+    comment_auto_delete_labels: str = "spam_toxic"
     comment_forward_labels: str = "negative,spam_toxic"
     comment_skip_reply_labels: str = "spam_toxic"
     # Minimum classifier confidence required before acting on
-    # auto-hide/skip. Below this, the comment is treated as "neutral".
+    # auto-hide / auto-delete / skip. Below this, the comment is
+    # treated as "neutral".
     comment_action_min_confidence: float = 0.6
 
     # Telegram admin bot — used for posting/managing the Page from chat.
