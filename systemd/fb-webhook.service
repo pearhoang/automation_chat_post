@@ -1,0 +1,27 @@
+[Unit]
+Description=Demo Shop FB Webhook (FastAPI / uvicorn)
+After=network.target redis-server.service postgresql.service
+Wants=redis-server.service postgresql.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/fb-webhook
+EnvironmentFile=/opt/fb-webhook/.env
+ExecStart=/opt/fb-webhook/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --proxy-headers --forwarded-allow-ips '*'
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/var/log/fb-webhook.log
+StandardError=append:/var/log/fb-webhook.log
+
+# hardening
+NoNewPrivileges=yes
+ProtectSystem=full
+# read-only (not 'yes') so the webhook can read the inventory
+# catalog at $HOME/.openclaw/workspace/inventory/catalog.json
+# while still preventing writes to home directories.
+ProtectHome=read-only
+ReadWritePaths=/opt/fb-webhook /var/log
+
+[Install]
+WantedBy=multi-user.target

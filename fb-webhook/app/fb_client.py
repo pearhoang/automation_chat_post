@@ -1,0 +1,222 @@
+"""Thin wrapper around the Facebook Graph API for posting replies."""
+
+import logging
+
+import httpx
+
+from .config import settings
+
+log = logging.getLogger(__name__)
+
+
+class FacebookClient:
+    def __init__(self) -> None:
+        self.base = f"https://graph.facebook.com/{settings.fb_graph_version}"
+        self.page_token = settings.fb_page_token
+        self.page_id = settings.fb_page_id
+        self._http = httpx.AsyncClient(timeout=15.0)
+
+    async def aclose(self) -> None:
+        await self._http.aclose()
+
+    async def send_message(self, recipient_id: str, text: str) -> dict:
+        """Send a Messenger message inside the 24h response window."""
+        url = f"{self.base}/me/messages"
+        payload = {
+            "recipient": {"id": recipient_id},
+            "message": {"text": text},
+            "messaging_type": "RESPONSE",
+        }
+        params = {"access_token": self.page_token}
+        r = await self._http.post(url, params=params, json=payload)
+        if r.status_code >= 400:
+            log.error("send_message failed status=%s body=%s", r.status_code, r.text)
+        r.raise_for_status()
+        return r.json()
+
+    async def send_image(self, recipient_id: str, image_bytes: bytes,
+                         filename: str = "image.jpg") -> dict:
+        """Send an image attachment via Messenger Send API (multipart)."""
+        import json as _json
+        url = f"{self.base}/me/messages"
+        params = {"access_token": self.page_token}
+        data = {
+            "recipient": _json.dumps({"id": recipient_id}),
+            "message": _json.dumps({
+                "attachment": {
+                    "type": "image",
+                    "payload": {"is_reusable": False},
+                }
+            }),
+            "messaging_type": "RESPONSE",
+        }
+        files = {
+            "filedata": (filename, image_bytes, "image/jpeg"),
+        }
+        r = await self._http.post(
+            url, params=params, data=data, files=files, timeout=60.0
+        )
+        if r.status_code >= 400:
+            log.error("send_image failed status=%s body=%s", r.status_code, r.text)
+        r.raise_for_status()
+        return r.json()
+
+    async def reply_comment(self, comment_id: str, text: str) -> dict:
+        """Public reply on a Page post comment."""
+        url = f"{self.base}/{comment_id}/comments"
+        params = {"access_token": self.page_token}
+        r = await self._http.post(url, params=params, data={"message": text})
+        if r.status_code >= 400:
+            log.error("reply_comment failed status=%s body=%s", r.status_code, r.text)
+        r.raise_for_status()
+        return r.json()
+
+    async def private_reply_to_comment(self, comment_id: str, text: str) -> dict:
+        """Send a private DM to the author of a Page comment.
+
+        Facebook's Private Reply feature: the Page can DM whoever wrote
+        a public comment within 7 days, identifying them by comment_id
+        (we never need their PSID directly). Requires the
+        ``pages_messaging`` permission.
+        """
+        import json as _json
+        url = f"{self.base}/me/messages"
+        params = {"access_token": self.page_token}
+        payload = {
+            "recipient": {"comment_id": comment_id},
+            "message": {"text": text},
+        }
+        r = await self._http.post(url, params=params, json=payload)
+        if r.status_code >= 400:
+            log.error(
+                "private_reply_to_comment failed status=%s body=%s",
+                r.status_code, r.text,
+            )
+        r.raise_for_status()
+        return r.json()
+
+    async def fetch_post(self, post_id: str) -> dict:
+        """Read a post's message + permalink so the LLM can reference it."""
+        url = f"{self.base}/{post_id}"
+        params = {
+            "access_token": self.page_token,
+            "fields": "id,message,created_time,permalink_url",
+        }
+        r = await self._http.get(url, params=params)
+        if r.status_code >= 400:
+            log.warning(
+                "fetch_post failed status=%s body=%s",
+                r.status_code, r.text[:200],
+            )
+            return {}
+        return r.json()
+
+    async def hide_comment(self, comment_id: str) -> dict:
+        """Soft-hide a comment (reversible).
+
+        Note: ``is_hidden=true`` only hides the comment from "general"
+        public view. The comment author and their friends can still
+        see it — that's a Facebook product decision so spammers don't
+        notice they've been muted. For comments that must disappear
+        for *everyone* (clear spam/toxic), use ``delete_comment``.
+
+        Requires ``pages_manage_engagement`` on the Page Token.
+        """
+        url = f"{self.base}/{comment_id}"
+        params = {"access_token": self.page_token}
+        r = await self._http.post(url, params=params, data={"is_hidden": "true"})
+        if r.status_code >= 400:
+            log.error(
+                "hide_comment failed status=%s body=%s", r.status_code, r.text
+            )
+        r.raise_for_status()
+        return r.json()
+
+    async def delete_comment(self, comment_id: str) -> dict:
+        """Hard-delete a comment so it disappears for *every* viewer.
+
+        Unlike ``is_hidden=true``, ``DELETE /{comment_id}`` removes
+        the comment for the author and their friends as well — the
+        only correct action for confirmed spam/toxic.
+
+        Requires ``pages_manage_engagement`` on the Page Token. Not
+        reversible — use only when the moderation classifier is
+        highly confident.
+        """
+        url = f"{self.base}/{comment_id}"
+        params = {"access_token": self.page_token}
+        r = await self._http.delete(url, params=params)
+        if r.status_code >= 400:
+            log.error(
+                "delete_comment failed status=%s body=%s",
+                r.status_code, r.text,
+            )
+        r.raise_for_status()
+        return r.json()
+
+    # ------------------------------------------------------------------
+    # Posting on the Page feed
+    # ------------------------------------------------------------------
+    async def post_text(self, message: str, link: str | None = None) -> dict:
+        """Publish a text (or text+link) post on the Page feed.
+
+        Requires the `pages_manage_posts` scope on the Page Token.
+        """
+        url = f"{self.base}/{self.page_id}/feed"
+        data: dict[str, str] = {"message": message}
+        if link:
+            data["link"] = link
+        params = {"access_token": self.page_token}
+        r = await self._http.post(url, params=params, data=data)
+        if r.status_code >= 400:
+            log.error("post_text failed status=%s body=%s", r.status_code, r.text)
+        r.raise_for_status()
+        return r.json()
+
+    async def post_photo_url(self, photo_url: str, caption: str = "") -> dict:
+        """Publish a photo to the Page feed by URL (Graph downloads the image).
+
+        Requires `pages_manage_posts`. Returns `{post_id, id}`.
+        """
+        url = f"{self.base}/{self.page_id}/photos"
+        data: dict[str, str] = {"url": photo_url}
+        if caption:
+            data["caption"] = caption
+        params = {"access_token": self.page_token}
+        r = await self._http.post(url, params=params, data=data, timeout=60.0)
+        if r.status_code >= 400:
+            log.error("post_photo_url failed status=%s body=%s", r.status_code, r.text)
+        r.raise_for_status()
+        return r.json()
+
+    async def post_photo_bytes(
+        self, photo_bytes: bytes, filename: str = "image.jpg", caption: str = ""
+    ) -> dict:
+        """Publish a photo by uploading raw bytes (multipart)."""
+        url = f"{self.base}/{self.page_id}/photos"
+        files = {"source": (filename, photo_bytes, "application/octet-stream")}
+        data: dict[str, str] = {}
+        if caption:
+            data["caption"] = caption
+        params = {"access_token": self.page_token}
+        r = await self._http.post(
+            url, params=params, data=data, files=files, timeout=120.0
+        )
+        if r.status_code >= 400:
+            log.error("post_photo_bytes failed status=%s body=%s", r.status_code, r.text)
+        r.raise_for_status()
+        return r.json()
+
+    async def debug_token(self) -> dict:
+        """Inspect the Page Token (expiry, scopes). Used by /status."""
+        url = f"{self.base}/debug_token"
+        params = {
+            "input_token": self.page_token,
+            "access_token": self.page_token,
+        }
+        r = await self._http.get(url, params=params)
+        r.raise_for_status()
+        return r.json()
+
+
+fb = FacebookClient()
