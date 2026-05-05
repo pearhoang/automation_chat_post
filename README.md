@@ -31,6 +31,10 @@ and **(2)** run a Facebook Page automation pipeline:
 │   │   ├── main.py            #   GET /healthz, /webhook/messenger handlers
 │   │   ├── fb_client.py       #   Graph API wrapper
 │   │   ├── llm.py             #   OpenAI (or any) draft-reply call
+│   │   ├── inventory.py       #   product catalog lookup for grounded replies
+│   │   ├── conversation.py    #   lightweight conversation context
+│   │   ├── telegram.py        #   Telegram admin bot / notifications
+│   │   ├── shop_info.py       #   mutable shop policy/profile context
 │   │   └── config.py          #   pydantic-settings → reads .env
 │   ├── requirements.txt
 │   └── .env.example
@@ -665,9 +669,8 @@ HTTP/2 200
 ## 7. Security checklist before going to production
 
 - [ ] Disable root password auth: `passwd -l root`, allow only the SSH key
-- [ ] Rotate `dDGK2b9YmW6012l0qCkjApBIVR` (the password used during initial
-  setup). The deploy key in `/root/.ssh/authorized_keys` is the only thing we
-  need afterwards.
+- [ ] Rotate the temporary root password used during initial setup. The deploy
+  key in `/root/.ssh/authorized_keys` is the only thing we need afterwards.
 - [ ] Set `FB_VERIFY_TOKEN` to `openssl rand -hex 32`.
 - [ ] Lock postgres password: `sudo -u postgres psql -c "ALTER USER fbwebhook WITH PASSWORD '<strong>';"` and update `DATABASE_URL` in `.env`.
 - [ ] Move `AUTO_REPLY_ENABLED=true` only after you have watched at least

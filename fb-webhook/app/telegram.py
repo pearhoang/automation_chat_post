@@ -63,7 +63,11 @@ class TelegramClient:
         return f"{TG_API}/bot{settings.telegram_bot_token}"
 
     async def send_message(
-        self, chat_id: int | str, text: str, parse_mode: str | None = None
+        self,
+        chat_id: int | str,
+        text: str,
+        parse_mode: str | None = None,
+        message_thread_id: int | str | None = None,
     ) -> dict[str, Any]:
         if not settings.telegram_bot_token:
             log.warning("telegram_bot_token empty — drop send_message")
@@ -75,6 +79,8 @@ class TelegramClient:
         }
         if parse_mode:
             payload["parse_mode"] = parse_mode
+        if message_thread_id is not None:
+            payload["message_thread_id"] = int(message_thread_id)
         r = await self._http.post(f"{self._base}/sendMessage", json=payload)
         if r.status_code >= 400:
             log.error(
@@ -96,6 +102,41 @@ class TelegramClient:
 
 
 tg = TelegramClient()
+
+
+# ---------------------------------------------------------------------------
+# Outbound notifications
+# ---------------------------------------------------------------------------
+async def notify_admin(text: str, *, topic: str | None = None) -> None:
+    """Push an alert to the admin Telegram (best-effort, never raises).
+
+    Routes to the right destination based on optional ``topic`` and the
+    settings configured in .env:
+
+    * If ``telegram_admin_group_id`` is set we post into that supergroup,
+      using ``telegram_admin_topic_<topic>`` for the message_thread_id
+      when present (e.g. topic="customer" → telegram_admin_topic_customer).
+    * Otherwise we fall back to ``telegram_admin_chat_id`` (1-1 DM).
+    """
+    if not settings.telegram_bot_token:
+        log.warning("notify_admin: no bot token configured")
+        return
+    group_id = (settings.telegram_admin_group_id or "").strip()
+    chat_id = (settings.telegram_admin_chat_id or "").strip()
+    target = group_id or chat_id
+    if not target:
+        log.warning("notify_admin: no admin chat configured")
+        return
+
+    thread_id: str | None = None
+    if group_id and topic:
+        attr = f"telegram_admin_topic_{topic}"
+        thread_id = getattr(settings, attr, "") or None
+
+    try:
+        await tg.send_message(target, text, message_thread_id=thread_id)
+    except Exception:  # noqa: BLE001
+        log.exception("notify_admin failed target=%s topic=%s", target, topic)
 
 
 # ---------------------------------------------------------------------------
